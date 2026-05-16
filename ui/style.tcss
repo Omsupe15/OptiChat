@@ -1,0 +1,404 @@
+/* ══════════════════════════════════════════════
+   OptiChat – Textual CSS  (style.css)
+   Targeting Textual 8.x TCSS syntax
+   ══════════════════════════════════════════════ */
+
+/* ── Splash Screen ──────────────────────────── */
+#splash-screen {
+    layer: overlay;
+    dock: top;
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    text-align: center;
+    background: $background;
+    color: $success;
+    text-style: bold;
+}
+
+/* ── Header Bar ─────────────────────────────── */
+HeaderBar {
+    dock: top;
+    height: 1;
+    background: $primary-background;
+    color: $text;
+    layout: horizontal;
+    padding: 0 1;
+}
+
+
+
+#header-app-name {
+    width: auto;
+    padding: 0 1;
+    text-style: bold;
+    color: $success;
+}
+
+
+#header-datetime {
+    width: 1fr;
+    padding: 0 1;
+    text-align: center;
+    color: $text-muted;
+}
+
+
+#header-status {
+    width: auto;
+    padding: 0 1;
+    color: $success;
+}
+
+
+#header-chats-count {
+    width: auto;
+    padding: 0 1;
+    color: $accent;
+}
+
+
+/* ── Footer Bar ─────────────────────────────── */
+FooterBar {
+    dock: bottom;
+    height: 3;
+    background: $primary-background;
+    color: $text;
+    layout: horizontal;
+    padding: 0 1;
+}
+
+
+
+#footer-tokens {
+    width: 1fr;
+    padding: 0 1;
+    color: $warning;
+}
+
+
+#footer-model-name {
+    width: 1fr;
+    padding: 0 1;
+    text-align: center;
+    color: $accent;
+}
+
+
+#footer-model-status {
+    width: auto;
+    padding: 0 1;
+    text-align: right;
+    color: $text-muted;
+}
+
+
+/* ── Tabbed Content ─────────────────────────── */
+#main-tabs {
+    height: 1fr;
+}
+
+/* ── Chats tab – body layout ────────────────── */
+#chats-body {
+    height: 1fr;
+}
+
+/* ── Sidebar ────────────────────────────────── */
+ChatSidebar {
+    width: 20;
+    min-width: 15;
+
+    height: 1fr;
+    border-right: heavy $primary;
+    padding: 1;
+    background: $surface;
+}
+
+#btn-new-chat {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#sidebar-title {
+    text-style: bold;
+    color: $text-muted;
+    padding: 0 0 1 0;
+    text-align: center;
+}
+
+#chat-tree {
+    height: 1fr;
+}
+
+/* ── Chat main area ─────────────────────────── */
+#chat-main-area {
+    width: 1fr;
+    height: 1fr;
+}
+
+/* ── Welcome panel ──────────────────────────── */
+WelcomePanel {
+    width: 100%;
+    height: 100%;
+    align: center middle;
+    content-align: center middle;
+}
+
+#welcome-text {
+    width: 60;
+    padding: 3 5;
+    text-align: center;
+    border: round $primary;
+    background: $surface;
+}
+
+/* ── Chat Window ────────────────────────────── */
+ChatWindow {
+    width: 100%;
+    height: 1fr;
+}
+
+#chat-header {
+    height: 3;
+    background: $surface;
+    border-bottom: solid $primary;
+    layout: horizontal;
+    padding: 0 1;
+}
+
+#chat-window-title {
+    width: 1fr;
+    content-align: left middle;
+    padding: 1 1;
+    text-style: bold;
+    color: $accent;
+}
+
+#chat-model-select {
+    width: 30;
+    margin-top: 0;
+}
+
+#btn-delete-chat {
+    margin-left: 1;
+    margin-top: 0;
+    min-width: 15;
+}
+
+#chat-messages {
+    height: 1fr;
+    padding: 1 2;
+}
+
+#chat-loading {
+    height: 1;
+    color: $accent;
+}
+
+
+/* ── Chat input bar ─────────────────────────── */
+#chat-input-bar {
+    dock: bottom;
+    height: auto;
+    padding: 0 1;
+    background: $surface;
+    border-top: solid $primary;
+}
+
+
+#chat-input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#btn-send {
+    width: auto;
+    min-width: 12;
+}
+
+/* ── Message Bubbles ────────────────────────── */
+ChatMessage {
+    margin: 0 0 1 0;
+    padding: 0 1;
+    height: auto;
+    background: $surface;
+}
+
+
+
+ChatMessage.msg-user {
+    margin-left: 8;
+    border-left: solid $accent;
+    background: $primary-background;
+}
+
+
+ChatMessage.msg-assistant {
+    margin-right: 8;
+    border-left: solid $success;
+    background: $surface;
+}
+
+
+.msg-role-label {
+    height: auto;
+    color: $accent;
+    text-style: bold;
+    margin-bottom: 0;
+}
+
+
+.msg-body {
+    height: auto;
+}
+
+/* ── Settings scroll ────────────────────────── */
+#settings-scroll {
+    height: 1fr;
+    padding: 1 2;
+}
+
+/* ── Settings panes ─────────────────────────── */
+CloudModelsPane,
+LocalModelsPane,
+ThemePane,
+MemoryPane {
+    height: auto;
+    padding: 1 2;
+    margin-bottom: 1;
+    border: round $primary;
+    background: $surface;
+}
+
+.settings-section-title {
+    text-style: bold;
+    color: $accent;
+    padding: 0 0 1 0;
+}
+
+.settings-subsection-title {
+    text-style: bold;
+    color: $text;
+    padding: 1 0 0 0;
+}
+
+.settings-desc {
+    color: $text-muted;
+    padding: 0 0 1 0;
+}
+
+/* ── Form rows ──────────────────────────────── */
+.form-row {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.form-row Input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+.form-row Button {
+    width: auto;
+    min-width: 16;
+}
+
+.form-row Select {
+    width: 1fr;
+}
+
+/* ── Switch row ─────────────────────────────── */
+.switch-row {
+    height: auto;
+    margin-bottom: 1;
+    padding: 1 0;
+}
+
+.switch-row Label {
+    width: 1fr;
+    padding: 0 1;
+}
+
+.switch-row Switch {
+    width: auto;
+}
+
+/* ── Saved providers / Ollama lists ─────────── */
+#saved-providers-scroll,
+#ollama-scroll {
+    height: 8;
+    border: solid $primary-background;
+    padding: 1;
+    margin-top: 1;
+}
+
+/* ── Memory editor ──────────────────────────── */
+#memory-editor {
+    height: 16;
+    margin-bottom: 1;
+}
+
+#memory-validation-msg {
+    width: 1fr;
+    padding: 0 2;
+}
+
+/* ── Theme select ───────────────────────────── */
+#theme-select {
+    width: 100%;
+}
+
+/* ── Provider select ────────────────────────── */
+#provider-select {
+    width: 100%;
+}
+
+/* ── Default model select ───────────────────── */
+#default-model-select {
+    width: 100%;
+}
+
+/* ── Help section ───────────────────────────── */
+HelpSection {
+    height: 1fr;
+    padding: 1 2;
+}
+
+HelpSection Collapsible {
+    margin-bottom: 1;
+}
+
+HelpSection Markdown {
+    padding: 1 2;
+}
+
+/* ── Confirmation Dialog ───────────────────── */
+ConfirmDeleteScreen {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.7);
+}
+
+#confirm-dialog {
+    width: 45;
+    height: auto;
+    padding: 2;
+    border: thick $background;
+    background: $surface;
+    align: center middle;
+}
+
+#confirm-label {
+    text-align: center;
+    margin-bottom: 1;
+    width: 100%;
+}
+
+#confirm-buttons {
+    align: center middle;
+    height: auto;
+    width: 100%;
+}
+
+#confirm-buttons Button {
+    margin: 0 1;
+}

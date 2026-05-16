@@ -1,0 +1,11 @@
+textual
+textual-dev
+langchain
+langchain-community
+langchain-core
+langchain-openai
+langchain-anthropic
+langchain-google-genai
+ollama
+chromadb
+sentence-transformers
