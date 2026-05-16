@@ -2,5 +2,5 @@
 *design.md
 *.venv
 *to_do.md
-**/__pycache__/
+*__pycache__*
 
