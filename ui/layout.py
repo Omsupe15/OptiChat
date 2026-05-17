@@ -913,7 +913,7 @@ class OptiChatApp(App):
             else:
                 self.notify("Invalid API key.", title="Error", severity="error")
                 
-        self.call_from_thread(update_ui)
+        update_ui()
 
     @on(Button.Pressed, "#btn-detect-ollama")
     def _on_detect_ollama(self) -> None:
