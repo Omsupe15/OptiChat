@@ -295,6 +295,71 @@ def rename_chat(chat_id: str, new_name: str) -> None:
         old_dir.rename(new_dir)
 
 
+def generate_chat_title(user_message: str, max_words: int = 3) -> str:
+    """Generate a short 2-3 word chat title from the first user message.
+
+    Strips common stopwords and punctuation, then takes the first
+    *max_words* meaningful words and title-cases them.
+    """
+    import re
+
+    _STOPWORDS = {
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+        "should", "may", "might", "must", "can", "could", "am", "i", "me",
+        "my", "we", "our", "you", "your", "he", "she", "it", "they", "them",
+        "its", "his", "her", "their", "this", "that", "these", "those",
+        "what", "which", "who", "whom", "how", "when", "where", "why",
+        "if", "then", "than", "but", "and", "or", "nor", "not", "no",
+        "so", "as", "at", "by", "for", "in", "of", "on", "to", "up",
+        "with", "from", "into", "about", "between", "through", "during",
+        "before", "after", "above", "below", "just", "also", "very",
+        "too", "some", "any", "all", "each", "every", "both", "few",
+        "more", "most", "other", "such", "only", "own", "same", "tell",
+        "please", "hi", "hello", "hey", "thanks", "thank",
+    }
+
+    # Remove punctuation and extra whitespace
+    cleaned = re.sub(r"[^\w\s]", " ", user_message.lower())
+    words = cleaned.split()
+
+    # Filter stopwords and very short words
+    meaningful = [w for w in words if w not in _STOPWORDS and len(w) > 1]
+
+    if not meaningful:
+        # Fallback: take any words if filtering removed everything
+        meaningful = words[:max_words] if words else ["Untitled"]
+
+    title_words = meaningful[:max_words]
+    return " ".join(w.capitalize() for w in title_words)
+
+
+def auto_rename_chat(chat_id: str, first_message: str) -> str | None:
+    """Generate a title from *first_message* and rename the chat.
+
+    Returns the new name on success, or ``None`` if the chat was not found
+    or a chat with the generated name already exists (falls back to appending
+    the last 4 chars of the chat id for uniqueness).
+
+    Designed to be called from a background thread.
+    """
+    chat = get_chat_by_id(chat_id)
+    if chat is None:
+        return None
+
+    new_name = generate_chat_title(first_message)
+
+    # Ensure uniqueness
+    if get_chat_by_name(new_name):
+        new_name = f"{new_name} {chat_id[-4:]}"
+
+    try:
+        rename_chat(chat_id, new_name)
+        return new_name
+    except Exception:
+        return None
+
+
 def delete_chat(chat_id: str) -> None:
     """Delete a chat and all its messages/sessions + folder."""
     chat = get_chat_by_id(chat_id)

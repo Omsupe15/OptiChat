@@ -209,13 +209,14 @@ async def send_message_via_pipeline(
     user_input: str,
     chat_name: str,
     chat_id: str,
-) -> str:
+) -> dict[str, str]:
     """Run the user's message through the full prompt construction pipeline.
 
     The pipeline handles classification, memory retrieval, prompt assembly,
     LLM invocation, and post-processing (DB + memory storage).
 
-    Returns the assistant reply string.
+    Returns a dict with keys ``response`` (the assistant reply) and
+    ``trace_log`` (the chain-of-thought trace extracted from the model output).
     """
     from app.pipeline import run_pipeline
 
@@ -228,9 +229,12 @@ async def send_message_via_pipeline(
 
     error = result.get("error")
     if error:
-        return f"*{error}*"
+        return {"response": f"*{error}*", "trace_log": ""}
 
-    return result.get("response", "")
+    return {
+        "response": result.get("response", ""),
+        "trace_log": result.get("trace_log", ""),
+    }
 
 
 # ══════════════════════════════════════════════

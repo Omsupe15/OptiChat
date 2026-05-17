@@ -141,6 +141,8 @@ async def run_pipeline(
         "memory_used": False,
         "final_prompt": [],
         "response": "",
+        "raw_response": "",
+        "trace_log": "",
         "error": None,
     }
 

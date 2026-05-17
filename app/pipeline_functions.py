@@ -66,7 +66,9 @@ class PipelineState(TypedDict, total=False):
     final_prompt: list[dict[str, str]]  # list of {role, content} dicts
 
     # ── Response ─────────────────────────────
-    response: str                     # full assistant reply
+    response: str                     # full assistant reply (cleaned)
+    raw_response: str                 # raw LLM output before trace extraction
+    trace_log: str                    # chain-of-thought trace / ToDo list
     error: str | None                 # error message if LLM call failed
 
 
@@ -339,7 +341,11 @@ def apply_personalization(state: PipelineState) -> PipelineState:
 def assemble_prompt(state: PipelineState) -> PipelineState:
     """Build the final prompt from all pipeline outputs.
 
-    Uses the template from design.md §3.2.
+    Uses the template from design.md §3.2.  Additionally injects:
+    - **Chain-of-thought trace** instructions: the model must first produce
+      a numbered ToDo plan inside ``<TRACE>...</TRACE>`` tags.
+    - **Adaptive response** instructions: response length adapts to the
+      detected complexity (simple → concise, complex → thorough).
     """
     personalized = state.get("personalized", {})
     prefs = personalized.get("preferences", {})
@@ -400,6 +406,24 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
             f"Structure your response using this schema:\n{schema_text}\n"
         )
 
+    # ── [CHAIN-OF-THOUGHT TRACE] block ────────
+    trace_block = (
+        "[CHAIN-OF-THOUGHT TRACE]\n"
+        "Before answering, you MUST create a numbered ToDo plan that breaks "
+        "the user's question into parts. Output this plan inside "
+        "<TRACE> and </TRACE> XML tags at the very beginning of your response.\n"
+        "Inside <TRACE>, list each step as:\n"
+        "  1. <step description>\n"
+        "  2. <step description>\n"
+        "  ...\n"
+        "After the closing </TRACE> tag, execute the plan step by step "
+        "and write your full response.\n"
+    )
+
+    # ── [ADAPTIVE RESPONSE] block ─────────────
+    complexity = state.get("complexity", "moderate")
+    adaptive_block = _build_adaptive_instructions(complexity)
+
     # ── [USER QUESTION] block ─────────────────
     user_question_block = (
         "[USER QUESTION — give this the most attention]\n"
@@ -412,6 +436,8 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
         system_content += "\n" + context_block
     if output_block:
         system_content += "\n" + output_block
+    system_content += "\n" + trace_block
+    system_content += "\n" + adaptive_block
 
     final_prompt: list[dict[str, str]] = [
         {"role": "system", "content": system_content},
@@ -432,6 +458,8 @@ async def invoke_model(state: PipelineState) -> PipelineState:
     """Send the assembled prompt to the selected LLM.
 
     Uses the existing ``get_chat_model`` from connect_models.
+    After receiving the raw response, parses ``<TRACE>...</TRACE>``
+    to separate the chain-of-thought trace from the user-facing reply.
     """
     from app.connect_models import get_chat_model
 
@@ -452,12 +480,28 @@ async def invoke_model(state: PipelineState) -> PipelineState:
     try:
         model = get_chat_model(model_id)
         response = await model.ainvoke(lc_messages)
-        reply = str(response.content)
-        return {**state, "response": reply, "error": None}
+        raw_reply = str(response.content)
+
+        # ── Parse trace from raw response ─────
+        trace_log, clean_reply = _extract_trace(raw_reply)
+
+        return {
+            **state,
+            "raw_response": raw_reply,
+            "response": clean_reply,
+            "trace_log": trace_log,
+            "error": None,
+        }
     except Exception as exc:
         error_msg = f"Error communicating with model: {exc}"
         logger.exception(error_msg)
-        return {**state, "response": "", "error": error_msg}
+        return {
+            **state,
+            "raw_response": "",
+            "response": "",
+            "trace_log": "",
+            "error": error_msg,
+        }
 
 
 # ══════════════════════════════════════════════
@@ -528,3 +572,65 @@ def route_after_classify(state: PipelineState) -> str:
     if state.get("needs_long_term", True):
         return "retrieve_long_term"
     return "score_and_filter"
+
+
+# ══════════════════════════════════════════════
+#  Internal helpers
+# ══════════════════════════════════════════════
+
+import re as _re
+
+_TRACE_PATTERN = _re.compile(
+    r"<TRACE>\s*(.*?)\s*</TRACE>",
+    _re.DOTALL | _re.IGNORECASE,
+)
+
+
+def _extract_trace(raw_text: str) -> tuple[str, str]:
+    """Extract the ``<TRACE>`` block from the raw LLM response.
+
+    Returns ``(trace_log, cleaned_response)``.
+    If no ``<TRACE>`` block is found the trace is empty and the
+    full text is returned unchanged.
+    """
+    match = _TRACE_PATTERN.search(raw_text)
+    if not match:
+        return "", raw_text.strip()
+
+    trace_log = match.group(1).strip()
+    # Remove the entire <TRACE>...</TRACE> block from the reply
+    cleaned = raw_text[: match.start()] + raw_text[match.end() :]
+    return trace_log, cleaned.strip()
+
+
+# ── Adaptive-response complexity mapping ──────
+_ADAPTIVE_INSTRUCTIONS: dict[str, str] = {
+    "simple": (
+        "[ADAPTIVE RESPONSE]\n"
+        "The question is simple. Provide a concise, focused answer. "
+        "Keep it brief — a few sentences or a short paragraph is sufficient. "
+        "Do not over-explain.\n"
+    ),
+    "moderate": (
+        "[ADAPTIVE RESPONSE]\n"
+        "The question is of moderate complexity. Provide a well-structured "
+        "answer with enough detail to be helpful. Use paragraphs, lists, "
+        "or examples as appropriate.\n"
+    ),
+    "complex": (
+        "[ADAPTIVE RESPONSE]\n"
+        "The question is complex or the user has asked for thorough "
+        "explanation. Provide a comprehensive, detailed response. "
+        "Cover all relevant aspects, include examples, edge cases, "
+        "and explanations even if the response is long. "
+        "Do NOT truncate or summarize prematurely.\n"
+    ),
+}
+
+
+def _build_adaptive_instructions(complexity: str) -> str:
+    """Return adaptive-response instructions for the given *complexity*."""
+    return _ADAPTIVE_INSTRUCTIONS.get(
+        complexity,
+        _ADAPTIVE_INSTRUCTIONS["moderate"],
+    )

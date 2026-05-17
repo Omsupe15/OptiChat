@@ -252,6 +252,19 @@ ChatMessage.msg-assistant {
     height: auto;
 }
 
+/* ── Chat Trace Logs (Collapsible under assistant messages) ── */
+.trace-collapsible {
+    margin-top: 1;
+    border: dashed $warning;
+    background: $primary-background;
+}
+
+.trace-body {
+    height: auto;
+    padding: 1 2;
+    color: $text-muted;
+}
+
 /* ── Settings scroll ────────────────────────── */
 #settings-scroll {
     height: 1fr;
