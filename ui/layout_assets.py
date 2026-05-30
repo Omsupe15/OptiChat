@@ -161,6 +161,65 @@ class ChatMessage(Static):
 
 
 # ──────────────────────────────────────────────
+#  Streaming Chat Message bubble
+# ──────────────────────────────────────────────
+class StreamingChatMessage(Static):
+    """Assistant message bubble that supports live token streaming.
+
+    Usage
+    -----
+    1. Mount this widget into the conversation container.
+    2. Call ``append_token(text)`` for each token chunk received from the LLM.
+    3. Call ``finish_streaming(trace_log)`` once the stream ends to finalise
+       the Markdown content and mount the "Chat Trace Logs" Collapsible.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._accumulated: str = ""
+        self.add_class("msg-assistant")
+
+    def compose(self) -> ComposeResult:
+        yield Static("[bold]OptiChat[/bold]", classes="msg-role-label")
+        yield Markdown("", classes="msg-body", id=f"stream-md-{id(self)}")
+
+    def append_token(self, text: str) -> None:
+        """Append *text* to the live Markdown widget."""
+        self._accumulated += text
+        try:
+            md = self.query_one(f"#stream-md-{id(self)}", Markdown)
+            md.update(self._accumulated)
+        except Exception:
+            pass
+
+    def finish_streaming(self, trace_log: str = "") -> None:
+        """Finalize the message.
+
+        Ensures the Markdown shows the complete response text, then mounts
+        the "Chat Trace Logs" Collapsible below it when *trace_log* is
+        non-empty.
+        """
+        try:
+            md = self.query_one(f"#stream-md-{id(self)}", Markdown)
+            md.update(self._accumulated)
+        except Exception:
+            pass
+
+        if trace_log:
+            collapsible = Collapsible(
+                title="Chat Trace Logs",
+                collapsed=True,
+                classes="trace-collapsible",
+            )
+            trace_md = Markdown(
+                f"**Model's Chain-of-Thought Plan:**\n\n{trace_log}",
+                classes="trace-body",
+            )
+            self.mount(collapsible)
+            collapsible.mount(trace_md)
+
+
+# ──────────────────────────────────────────────
 #  Chat Window (conversation + input)
 # ──────────────────────────────────────────────
 class ChatWindow(Vertical):

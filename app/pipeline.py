@@ -30,6 +30,7 @@ from langgraph.graph import END, StateGraph
 
 from app.pipeline_functions import (
     PipelineState,
+    StreamDone,
     apply_personalization,
     assemble_prompt,
     classify_question,
@@ -39,7 +40,9 @@ from app.pipeline_functions import (
     post_process,
     retrieve_long_term_memory,
     route_after_classify,
+    run_pipeline_until_prompt,
     score_and_filter_chunks,
+    stream_invoke_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,3 +153,97 @@ async def run_pipeline(
     result = await _compiled_graph.ainvoke(initial_state)
 
     return result
+
+
+async def stream_pipeline(
+    user_input: str,
+    chat_name: str,
+    chat_id: str,
+    model_id: str,
+):
+    """Streaming variant of the prompt construction pipeline.
+
+    Runs all pipeline stages up to ``assemble_prompt``, then streams
+    the LLM response token-by-token.  Post-processing (DB storage +
+    memory updates) is performed after the stream completes.
+
+    Yields
+    ------
+    str
+        Individual token chunks from the LLM (the ``<TRACE>`` block is
+        silently consumed and never yielded).
+    StreamDone
+        A single :class:`~app.pipeline_functions.StreamDone` sentinel as
+        the **very last** item.  The caller must handle this to know
+        streaming has finished and to access ``trace_log`` / ``response``.
+    """
+    # ── 1. Pre-load memory ───────────────────────────────────────────
+    mem_context = await load_memory_context(chat_name, chat_id)
+
+    state: PipelineState = {
+        "user_input": user_input,
+        "chat_name": chat_name,
+        "chat_id": chat_id,
+        "model_id": model_id,
+        # Pre-loaded memory
+        "short_term": mem_context["short_term"],
+        "lru_cached": mem_context["lru_cached"],
+        "personalized": mem_context["personalized"],
+        # Defaults (filled by nodes)
+        "question_type": "",
+        "complexity": "",
+        "language": "English",
+        "needs_long_term": True,
+        "context_hint": "",
+        "schema_category": "",
+        "schema_depth": "standard",
+        "selected_output_schema": "",
+        "long_term_raw": [],
+        "long_term_scored": [],
+        "memory_used": False,
+        "final_prompt": [],
+        "response": "",
+        "raw_response": "",
+        "trace_log": "",
+        "error": None,
+    }
+
+    # ── 2. Run pipeline up to assemble_prompt ────────────────────────
+    state = await run_pipeline_until_prompt(state)
+
+    # ── 3. Stream LLM tokens ─────────────────────────────────────────
+    done: StreamDone | None = None
+    async for item in stream_invoke_model(state):
+        if isinstance(item, StreamDone):
+            done = item
+        else:
+            yield item  # plain token string – forward to the UI
+
+    # Ensure we always have a done sentinel even if the generator ended
+    # unexpectedly (defensive guard).
+    if done is None:
+        done = StreamDone(
+            trace_log="",
+            response="",
+            raw_response="",
+            error="Stream ended without a StreamDone sentinel.",
+        )
+
+    # Yield the sentinel so the caller can access trace_log / response.
+    yield done
+
+    # ── 4. Post-process (DB + memory) ────────────────────────────────
+    if done.error:
+        return  # Skip post-processing if streaming failed
+
+    final_state: PipelineState = {
+        **state,
+        "response": done.response,
+        "raw_response": done.raw_response,
+        "trace_log": done.trace_log,
+        "error": None,
+    }
+    try:
+        await post_process(final_state)
+    except Exception:
+        logger.exception("post_process failed after streaming")

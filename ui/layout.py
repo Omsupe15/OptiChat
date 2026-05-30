@@ -40,6 +40,8 @@ from textual.widgets import (
 
 import app.connect_models as cm
 from app.connect_models import send_message, send_message_via_pipeline, stream_message
+from app.pipeline import stream_pipeline
+from app.pipeline_functions import StreamDone
 import app.memory as mem
 import db.database as db
 import ui.help as help
@@ -50,6 +52,7 @@ from ui.layout_assets import (
     HeaderBar,
     FooterBar,
     ConfirmDeleteScreen,
+    StreamingChatMessage,
     SPLASH_ART
 )
 from ui.layout_assets import WelcomePanel
@@ -80,6 +83,7 @@ class OptiChatApp(App):
     ]
 
     show_splash: reactive[bool] = reactive(True)
+    streaming_enabled: reactive[bool] = reactive(True)
     active_chat_id: str | None = None
 
     # ── Compose ──────────────────────────────
@@ -197,7 +201,9 @@ class OptiChatApp(App):
 
     # ── Actions ──────────────────────────────
     def action_toggle_streaming(self) -> None:
-        self.notify("Streaming toggled", title="Streaming")
+        self.streaming_enabled = not self.streaming_enabled
+        state = "ON" if self.streaming_enabled else "OFF"
+        self.notify(f"Streaming {state}", title="Streaming")
 
     def action_cancel_response(self) -> None:
         chat_window = self.query_one("#chat-window", ChatWindow)
@@ -316,14 +322,13 @@ class OptiChatApp(App):
     async def _get_ai_response(self, chat_id: str, user_text: str) -> None:
         """Run the user message through the Phase 4 prompt construction pipeline.
 
-        The pipeline handles:
-        - Question classification and schema detection
-        - Memory retrieval (short-term, LRU, long-term)
-        - Relevance scoring and filtering
-        - Personalization injection
-        - Final prompt assembly
-        - LLM invocation
-        - Post-processing (DB storage + memory updates)
+        When ``streaming_enabled`` is True the response is streamed token-by-
+        token into a live :class:`StreamingChatMessage` widget.  The
+        ``<TRACE>`` block is silently consumed during streaming and appended
+        as a ``Collapsible`` once the stream finishes.
+
+        When ``streaming_enabled`` is False the full pipeline runs without
+        streaming and the complete response is rendered at once.
         """
         # Determine which model to use for this chat
         chat_data = db.get_chat_by_id(chat_id)
@@ -340,38 +345,72 @@ class OptiChatApp(App):
             return
 
         trace_log = ""
-        try:
-            result = await send_message_via_pipeline(
-                model_id=model_id,
-                user_input=user_text,
-                chat_name=chat_name,
-                chat_id=chat_id,
-            )
-            reply = result["response"]
-            trace_log = result.get("trace_log", "")
-        except Exception as exc:
-            reply = f"*Error communicating with model:* `{exc}`"
-            # Pipeline failed; persist the error reply manually
-            db.add_message(chat_id, "user", user_text)
-            db.add_message(chat_id, "assistant", reply)
+        reply = ""
 
-        # Update footer token count
+        if self.streaming_enabled:
+            # ── Streaming path ────────────────────────────────────
+            chat_window = self.query_one("#chat-window", ChatWindow)
+            chat_window.show_loading(False)  # hide spinner; streaming is live
+
+            # Mount a live streaming bubble
+            container = self.query_one("#chat-messages", VerticalScroll)
+            stream_bubble = StreamingChatMessage()
+            await container.mount(stream_bubble)
+            container.scroll_end(animate=False)
+
+            try:
+                async for item in stream_pipeline(
+                    user_input=user_text,
+                    chat_name=chat_name,
+                    chat_id=chat_id,
+                    model_id=model_id,
+                ):
+                    if isinstance(item, StreamDone):
+                        trace_log = item.trace_log
+                        reply = item.response
+                        if item.error:
+                            reply = f"*Error communicating with model:* `{item.error}`"
+                        # Finalise the bubble: set full content + add trace
+                        stream_bubble.finish_streaming(trace_log)
+                        container.scroll_end(animate=False)
+                    else:
+                        # Plain token string – append to live bubble
+                        stream_bubble.append_token(item)
+                        container.scroll_end(animate=False)
+            except Exception as exc:
+                reply = f"*Error communicating with model:* `{exc}`"
+                stream_bubble.append_token(reply)
+                stream_bubble.finish_streaming("")
+                db.add_message(chat_id, "user", user_text)
+                db.add_message(chat_id, "assistant", reply)
+        else:
+            # ── Non-streaming (pipeline) path ─────────────────────────
+            try:
+                result = await send_message_via_pipeline(
+                    model_id=model_id,
+                    user_input=user_text,
+                    chat_name=chat_name,
+                    chat_id=chat_id,
+                )
+                reply = result["response"]
+                trace_log = result.get("trace_log", "")
+            except Exception as exc:
+                reply = f"*Error communicating with model:* `{exc}`"
+                db.add_message(chat_id, "user", user_text)
+                db.add_message(chat_id, "assistant", reply)
+
+            if self.active_chat_id == chat_id:
+                chat_window = self.query_one("#chat-window", ChatWindow)
+                chat_window.show_loading(False)
+                chat_window.add_message("assistant", reply, trace_log=trace_log)
+
+        # ── Update footer ──────────────────────────────────────────
         footer = self.query_one("#footer-bar", FooterBar)
         footer.tokens_used += mem.estimate_tokens(user_text) + mem.estimate_tokens(reply)
-
-        # Update footer model info
         footer.model_name = model_id
         footer.model_status = "Active"
 
-        # Render if user is still viewing this chat
-        if self.active_chat_id == chat_id:
-            chat_window = self.query_one("#chat-window", ChatWindow)
-            chat_window.show_loading(False)
-            chat_window.add_message("assistant", reply, trace_log=trace_log)
-
-        # ── Auto-rename chat from first user question ─────
-        # If the chat still has the generic "Chat N" placeholder name,
-        # rename it in a background thread based on the user's question.
+        # ── Auto-rename chat ───────────────────────────────────────
         current_name = (db.get_chat_by_id(chat_id) or {}).get("name", "")
         if current_name.startswith("Chat "):
             self._auto_rename_chat(chat_id, user_text)

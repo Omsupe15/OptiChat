@@ -505,6 +505,155 @@ async def invoke_model(state: PipelineState) -> PipelineState:
 
 
 # ══════════════════════════════════════════════
+#  Streaming LLM invocation helpers
+# ══════════════════════════════════════════════
+
+class StreamDone:
+    """Sentinel object yielded at the end of ``stream_invoke_model``.
+
+    Carries the final ``trace_log`` and the full cleaned ``response``
+    so the caller can hand them to ``post_process`` without needing a
+    second coroutine call.
+    """
+    __slots__ = ("trace_log", "response", "raw_response", "error")
+
+    def __init__(
+        self,
+        trace_log: str,
+        response: str,
+        raw_response: str,
+        error: str | None = None,
+    ) -> None:
+        self.trace_log = trace_log
+        self.response = response
+        self.raw_response = raw_response
+        self.error = error
+
+
+async def stream_invoke_model(state: PipelineState):
+    """Async generator that streams the LLM response token-by-token.
+
+    Behaviour
+    ---------
+    1. Buffers all incoming tokens until the closing ``</TRACE>`` tag is
+       found.  Once found, the trace log is stored internally and the
+       remaining tokens (and all subsequent tokens) are **yielded** as
+       plain strings so the UI can update the Markdown widget in real-time.
+    2. If the model never emits a ``<TRACE>`` block every token is yielded
+       directly (no buffering delay).
+    3. When the stream ends a :class:`StreamDone` sentinel is yielded as the
+       very last item.  The caller **must** check ``isinstance(item, StreamDone)``
+       to know when streaming is finished and to retrieve the ``trace_log``
+       and ``response`` for post-processing.
+
+    Yields
+    ------
+    str | StreamDone
+        Individual token strings while streaming, then a single
+        :class:`StreamDone` object when done.
+    """
+    from app.connect_models import get_chat_model
+
+    model_id = state["model_id"]
+    final_prompt = state.get("final_prompt", [])
+
+    _type_map = {
+        "system": SystemMessage,
+        "user": HumanMessage,
+        "assistant": AIMessage,
+    }
+
+    lc_messages = [
+        _type_map[m["role"]](content=m["content"])
+        for m in final_prompt
+    ]
+
+    raw_chunks: list[str] = []
+    # Accumulate tokens until we are past the <TRACE>...</TRACE> block.
+    # ``trace_done`` flips to True once </TRACE> has been flushed.
+    trace_done: bool = False
+    # Buffer for tokens received before </TRACE> closes
+    pre_trace_buf: str = ""
+
+    try:
+        model = get_chat_model(model_id)
+        async for chunk in model.astream(lc_messages):
+            text: str = ""
+            if hasattr(chunk, "content"):
+                text = chunk.content or ""
+            else:
+                text = str(chunk)
+
+            if not text:
+                continue
+
+            raw_chunks.append(text)
+
+            if trace_done:
+                # Trace already extracted – yield token directly
+                yield text
+            else:
+                # Accumulate until we see </TRACE>
+                pre_trace_buf += text
+                close_tag = "</TRACE>"
+                close_tag_lower = close_tag.lower()
+                buf_lower = pre_trace_buf.lower()
+                idx = buf_lower.find(close_tag_lower)
+                if idx != -1:
+                    # Found the closing tag – flush remainder
+                    after_tag = pre_trace_buf[idx + len(close_tag):]
+                    trace_done = True
+                    pre_trace_buf = ""
+                    if after_tag:
+                        yield after_tag
+                # else: keep buffering silently
+
+        # --- Stream finished ---
+        raw_reply = "".join(raw_chunks)
+
+        # If </TRACE> was never seen but we still have buffered content,
+        # flush it now (no trace was produced).
+        if not trace_done and pre_trace_buf:
+            yield pre_trace_buf
+
+        trace_log, clean_reply = _extract_trace(raw_reply)
+
+        yield StreamDone(
+            trace_log=trace_log,
+            response=clean_reply,
+            raw_response=raw_reply,
+            error=None,
+        )
+
+    except Exception as exc:
+        error_msg = f"Error communicating with model: {exc}"
+        logger.exception(error_msg)
+        yield StreamDone(
+            trace_log="",
+            response="",
+            raw_response="",
+            error=error_msg,
+        )
+
+
+async def run_pipeline_until_prompt(state: PipelineState) -> PipelineState:
+    """Run all pipeline nodes up to and including ``assemble_prompt``.
+
+    Returns the populated :class:`PipelineState` with ``final_prompt``
+    ready.  This is used by the streaming path so the caller can hand
+    the final prompt to :func:`stream_invoke_model` before committing
+    to a full non-streaming ``ainvoke`` call.
+    """
+    state = classify_question(state)
+    state = classify_schema(state)
+    state = retrieve_long_term_memory(state)
+    state = score_and_filter_chunks(state)
+    state = apply_personalization(state)
+    state = assemble_prompt(state)
+    return state
+
+
+# ══════════════════════════════════════════════
 #  Node 8: Post-Response Processing
 # ══════════════════════════════════════════════
 
