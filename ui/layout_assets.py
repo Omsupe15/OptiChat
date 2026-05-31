@@ -221,6 +221,22 @@ class StreamingChatMessage(Static):
 
 
 # ──────────────────────────────────────────────
+#  Phase 5: Web Search Toggle widget
+# ──────────────────────────────────────────────
+class WebSearchToggle(Horizontal):
+    """Small inline widget that renders a labelled toggle for web search.
+
+    Placed in the chat window header beside the model-select dropdown.
+    The underlying ``Switch`` has id ``"websearch-toggle"`` so the main
+    application can listen for ``Switch.Changed`` events from it.
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("🌐 Web Search", classes="websearch-label")
+        yield Switch(value=False, id="websearch-toggle", classes="websearch-switch")
+
+
+# ──────────────────────────────────────────────
 #  Chat Window (conversation + input)
 # ──────────────────────────────────────────────
 class ChatWindow(Vertical):
@@ -232,6 +248,7 @@ class ChatWindow(Vertical):
         with Horizontal(id="chat-header"):
             yield Static("", id="chat-window-title")
             yield Select([], prompt="Select Model", id="chat-model-select", allow_blank=True)
+            yield WebSearchToggle(id="websearch-toggle-widget")
             yield Button("Delete Chat", id="btn-delete-chat", variant="error")
         yield VerticalScroll(id="chat-messages")
         yield LoadingIndicator(id="chat-loading")

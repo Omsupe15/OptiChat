@@ -209,11 +209,20 @@ async def send_message_via_pipeline(
     user_input: str,
     chat_name: str,
     chat_id: str,
+    *,
+    websearch_enabled: bool = False,
 ) -> dict[str, str]:
     """Run the user's message through the full prompt construction pipeline.
 
     The pipeline handles classification, memory retrieval, prompt assembly,
     LLM invocation, and post-processing (DB + memory storage).
+
+    Parameters
+    ----------
+    websearch_enabled:
+        When True the pipeline's classifier node queries DuckDuckGo for
+        the top-2 results and injects them into the final prompt
+        (Phase 5 feature).
 
     Returns a dict with keys ``response`` (the assistant reply) and
     ``trace_log`` (the chain-of-thought trace extracted from the model output).
@@ -225,6 +234,7 @@ async def send_message_via_pipeline(
         chat_name=chat_name,
         chat_id=chat_id,
         model_id=model_id,
+        websearch_enabled=websearch_enabled,
     )
 
     error = result.get("error")

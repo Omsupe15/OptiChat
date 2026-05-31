@@ -53,6 +53,7 @@ from ui.layout_assets import (
     FooterBar,
     ConfirmDeleteScreen,
     StreamingChatMessage,
+    WebSearchToggle,
     SPLASH_ART
 )
 from ui.layout_assets import WelcomePanel
@@ -84,6 +85,7 @@ class OptiChatApp(App):
 
     show_splash: reactive[bool] = reactive(True)
     streaming_enabled: reactive[bool] = reactive(True)
+    websearch_enabled: reactive[bool] = reactive(False)  # Phase 5: web search toggle
     active_chat_id: str | None = None
 
     # ── Compose ──────────────────────────────
@@ -364,6 +366,7 @@ class OptiChatApp(App):
                     chat_name=chat_name,
                     chat_id=chat_id,
                     model_id=model_id,
+                    websearch_enabled=self.websearch_enabled,
                 ):
                     if isinstance(item, StreamDone):
                         trace_log = item.trace_log
@@ -391,6 +394,7 @@ class OptiChatApp(App):
                     user_input=user_text,
                     chat_name=chat_name,
                     chat_id=chat_id,
+                    websearch_enabled=self.websearch_enabled,
                 )
                 reply = result["response"]
                 trace_log = result.get("trace_log", "")
@@ -511,6 +515,13 @@ class OptiChatApp(App):
         cfg["memory_enabled"] = event.value
         db.save_config(cfg)
         self.notify(f"Personalized memory {state}.", title="Memory")
+
+    @on(Switch.Changed, "#websearch-toggle")
+    def _on_websearch_toggle(self, event: Switch.Changed) -> None:
+        """Phase 5: toggle web search on/off for subsequent messages."""
+        self.websearch_enabled = event.value
+        state = "ON 🌐" if event.value else "OFF"
+        self.notify(f"Web Search {state}", title="Web Search")
 
 
 # ──────────────────────────────────────────────

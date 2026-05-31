@@ -1,4 +1,4 @@
-"""OptiChat – LangGraph Prompt Construction Pipeline (Phase 4).
+"""OptiChat – LangGraph Prompt Construction Pipeline (Phase 4 + 5).
 
 Builds a LangGraph ``StateGraph`` that wires together the nodes defined
 in ``pipeline_functions.py``.  The graph follows the flow from
@@ -15,9 +15,19 @@ design.md §3.1:
       → post_process
       → END
 
+Phase 5 addition
+────────────────
+Both ``run_pipeline`` and ``stream_pipeline`` now accept a
+``websearch_enabled`` boolean flag.  When True, the classifier node
+performs a DuckDuckGo search and injects the results into the final
+prompt via the ``[WEBSEARCH]`` block.
+
 Public API
 ──────────
-    run_pipeline(user_input, chat_name, chat_id, model_id) -> str
+    run_pipeline(user_input, chat_name, chat_id, model_id,
+                 websearch_enabled=False) -> dict
+    stream_pipeline(user_input, chat_name, chat_id, model_id,
+                    websearch_enabled=False) -> AsyncGenerator
 """
 
 from __future__ import annotations
@@ -111,8 +121,16 @@ async def run_pipeline(
     chat_name: str,
     chat_id: str,
     model_id: str,
+    *,
+    websearch_enabled: bool = False,
 ) -> dict[str, Any]:
     """Execute the full prompt construction pipeline.
+
+    Parameters
+    ----------
+    websearch_enabled:
+        When True the classifier node will query DuckDuckGo for the top-2
+        results and inject them into the final prompt (Phase 5 feature).
 
     Returns the final ``PipelineState`` dict.  The caller should read
     ``state["response"]`` for the assistant reply and ``state["error"]``
@@ -126,6 +144,9 @@ async def run_pipeline(
         "chat_name": chat_name,
         "chat_id": chat_id,
         "model_id": model_id,
+        # Phase 5: websearch flag
+        "websearch_enabled": websearch_enabled,
+        "websearch_results": "",
         # Pre-loaded memory
         "short_term": mem_context["short_term"],
         "lru_cached": mem_context["lru_cached"],
@@ -160,12 +181,20 @@ async def stream_pipeline(
     chat_name: str,
     chat_id: str,
     model_id: str,
+    *,
+    websearch_enabled: bool = False,
 ):
     """Streaming variant of the prompt construction pipeline.
 
     Runs all pipeline stages up to ``assemble_prompt``, then streams
     the LLM response token-by-token.  Post-processing (DB storage +
     memory updates) is performed after the stream completes.
+
+    Parameters
+    ----------
+    websearch_enabled:
+        When True the classifier node will query DuckDuckGo for the top-2
+        results and inject them into the final prompt (Phase 5 feature).
 
     Yields
     ------
@@ -185,6 +214,9 @@ async def stream_pipeline(
         "chat_name": chat_name,
         "chat_id": chat_id,
         "model_id": model_id,
+        # Phase 5: websearch flag
+        "websearch_enabled": websearch_enabled,
+        "websearch_results": "",
         # Pre-loaded memory
         "short_term": mem_context["short_term"],
         "lru_cached": mem_context["lru_cached"],

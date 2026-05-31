@@ -1,4 +1,4 @@
-"""OptiChat – Prompt Construction Pipeline Functions (Phase 4).
+"""OptiChat – Prompt Construction Pipeline Functions (Phase 4 + 5).
 
 LangGraph state definition, node functions, and helpers for the
 prompt construction pipeline described in design.md §3.
@@ -6,11 +6,14 @@ prompt construction pipeline described in design.md §3.
 Pipeline steps
 ──────────────
 1. Classifier  – detect question type, complexity, language; check ST/LRU.
+               – (Phase 5) if websearch_enabled, simultaneously fetch top-2
+                 DuckDuckGo results and store them in the state.
 2. Schema      – detect output schema category + depth (runs in parallel).
 3. Memory      – retrieve long-term chunks from ChromaDB (if needed).
 4. Relevance   – score & filter retrieved chunks (drop < 0.4).
 5. Personalize – inject user preferences from personalized memory.
 6. Assemble    – build the final prompt from all gathered context.
+               – (Phase 5) injects [WEBSEARCH] block when results are present.
 7. Invoke      – call the selected LLM and capture the response.
 8. Post-process – store response in DB/memory, trigger background tasks.
 """
@@ -61,6 +64,10 @@ class PipelineState(TypedDict, total=False):
     long_term_scored: list[dict[str, Any]] # after relevance scoring
     personalized: dict[str, Any]
     memory_used: bool                 # True if long-term retrieval was used
+
+    # ── Websearch (Phase 5) ──────────────────
+    websearch_enabled: bool           # True when the websearch toggle is on
+    websearch_results: str            # formatted top-2 DuckDuckGo results
 
     # ── Prompt ───────────────────────────────
     final_prompt: list[dict[str, str]]  # list of {role, content} dicts
@@ -153,6 +160,54 @@ RELEVANCE_THRESHOLD = 0.4
 
 
 # ══════════════════════════════════════════════
+#  Phase 5 helper: DuckDuckGo Web Search
+# ══════════════════════════════════════════════
+
+def perform_web_search(query: str, max_results: int = 2) -> str:
+    """Search the web using DuckDuckGo and return formatted top results.
+
+    Uses the ``duckduckgo_search`` library (already in requirements.txt).
+    Returns a human-readable string with the top *max_results* results.
+    If the search fails or returns nothing, an empty string is returned.
+
+    Parameters
+    ----------
+    query:
+        The search query derived from the user's input.
+    max_results:
+        Number of top results to fetch (default 2, as per Phase 5 spec).
+    """
+    try:
+        from duckduckgo_search import DDGS
+
+        results: list[dict] = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append(r)
+
+        if not results:
+            return ""
+
+        lines: list[str] = []
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "(no title)")
+            href = r.get("href", "")
+            body = r.get("body", "")
+            # Truncate body to keep the prompt concise
+            body_snippet = body[:400].strip() if body else "(no snippet)"
+            lines.append(
+                f"[Result {i}]\n"
+                f"Title: {title}\n"
+                f"URL: {href}\n"
+                f"Snippet: {body_snippet}\n"
+            )
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("DuckDuckGo web search failed")
+        return ""
+
+
+# ══════════════════════════════════════════════
 #  Node 1: Classifier  (question type + context check)
 # ══════════════════════════════════════════════
 
@@ -161,6 +216,11 @@ def classify_question(state: PipelineState) -> PipelineState:
 
     Also checks short-term and LRU memory for relevant context hints.
     If sufficient context is found locally, sets ``needs_long_term = False``.
+
+    Phase 5 addition: if ``websearch_enabled`` is True, simultaneously
+    fetches the top-2 DuckDuckGo results for the user's query and stores
+    them in ``websearch_results``.  This runs synchronously here so the
+    results are ready for ``assemble_prompt`` without any extra graph nodes.
     """
     user_input = state["user_input"]
     user_lower = user_input.lower()
@@ -202,6 +262,12 @@ def classify_question(state: PipelineState) -> PipelineState:
                     context_hint += msg.get("content", "") + "\n\n"
                     needs_long_term = False
 
+    # ── Phase 5: Web search (runs simultaneously with classification) ──
+    websearch_results = ""
+    if state.get("websearch_enabled", False):
+        logger.info("Websearch enabled — querying DuckDuckGo for: %s", user_input[:80])
+        websearch_results = perform_web_search(user_input)
+
     return {
         **state,
         "question_type": question_type,
@@ -209,6 +275,7 @@ def classify_question(state: PipelineState) -> PipelineState:
         "language": language,
         "needs_long_term": needs_long_term,
         "context_hint": context_hint.strip(),
+        "websearch_results": websearch_results,
     }
 
 
@@ -424,6 +491,18 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
     complexity = state.get("complexity", "moderate")
     adaptive_block = _build_adaptive_instructions(complexity)
 
+    # ── [WEBSEARCH] block (Phase 5) ───────────
+    websearch_block = ""
+    websearch_results = state.get("websearch_results", "")
+    if websearch_results:
+        websearch_block = (
+            "[WEBSEARCH — DuckDuckGo Results]\n"
+            "The following real-time web search results were retrieved to "
+            "help answer the user's question. Use them as supporting context "
+            "where relevant, and cite the source URLs if you quote them.\n\n"
+            f"{websearch_results}\n"
+        )
+
     # ── [USER QUESTION] block ─────────────────
     user_question_block = (
         "[USER QUESTION — give this the most attention]\n"
@@ -436,6 +515,8 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
         system_content += "\n" + context_block
     if output_block:
         system_content += "\n" + output_block
+    if websearch_block:
+        system_content += "\n" + websearch_block
     system_content += "\n" + trace_block
     system_content += "\n" + adaptive_block
 

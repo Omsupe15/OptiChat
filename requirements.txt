@@ -9,3 +9,4 @@ langchain-google-genai
 ollama
 chromadb
 sentence-transformers
+duckduckgo-search
