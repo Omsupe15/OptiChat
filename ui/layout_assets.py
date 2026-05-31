@@ -192,12 +192,13 @@ class StreamingChatMessage(Static):
         except Exception:
             pass
 
-    def finish_streaming(self, trace_log: str = "") -> None:
+    async def finish_streaming(self, trace_log: str = "") -> None:
         """Finalize the message.
 
         Ensures the Markdown shows the complete response text, then mounts
         the "Chat Trace Logs" Collapsible below it when *trace_log* is
-        non-empty.
+        non-empty.  Must be awaited so Textual has time to complete the
+        widget mount before the caller continues.
         """
         try:
             md = self.query_one(f"#stream-md-{id(self)}", Markdown)
@@ -206,17 +207,17 @@ class StreamingChatMessage(Static):
             pass
 
         if trace_log:
-            collapsible = Collapsible(
-                title="Chat Trace Logs",
-                collapsed=True,
-                classes="trace-collapsible",
-            )
             trace_md = Markdown(
                 f"**Model's Chain-of-Thought Plan:**\n\n{trace_log}",
                 classes="trace-body",
             )
-            self.mount(collapsible)
-            collapsible.mount(trace_md)
+            collapsible = Collapsible(
+                trace_md,
+                title="Chat Trace Logs",
+                collapsed=True,
+                classes="trace-collapsible",
+            )
+            await self.mount(collapsible)
 
 
 # ──────────────────────────────────────────────

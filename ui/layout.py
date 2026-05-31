@@ -371,7 +371,7 @@ class OptiChatApp(App):
                         if item.error:
                             reply = f"*Error communicating with model:* `{item.error}`"
                         # Finalise the bubble: set full content + add trace
-                        stream_bubble.finish_streaming(trace_log)
+                        await stream_bubble.finish_streaming(trace_log)
                         container.scroll_end(animate=False)
                     else:
                         # Plain token string – append to live bubble
@@ -380,7 +380,7 @@ class OptiChatApp(App):
             except Exception as exc:
                 reply = f"*Error communicating with model:* `{exc}`"
                 stream_bubble.append_token(reply)
-                stream_bubble.finish_streaming("")
+                await stream_bubble.finish_streaming("")
                 db.add_message(chat_id, "user", user_text)
                 db.add_message(chat_id, "assistant", reply)
         else:
