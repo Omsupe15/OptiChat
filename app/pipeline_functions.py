@@ -163,7 +163,7 @@ RELEVANCE_THRESHOLD = 0.4
 #  Phase 5 helper: DuckDuckGo Web Search
 # ══════════════════════════════════════════════
 
-def perform_web_search(query: str, max_results: int = 2) -> str:
+def perform_web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo and return formatted top results.
 
     Uses the ``duckduckgo_search`` library (already in requirements.txt).
@@ -178,11 +178,11 @@ def perform_web_search(query: str, max_results: int = 2) -> str:
         Number of top results to fetch (default 2, as per Phase 5 spec).
     """
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
 
         results: list[dict] = []
         with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
+            for r in ddgs.text(query=query, max_results=max_results):
                 results.append(r)
 
         if not results:
@@ -476,8 +476,10 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
     # ── [CHAIN-OF-THOUGHT TRACE] block ────────
     trace_block = (
         "[CHAIN-OF-THOUGHT TRACE]\n"
-        "Before answering, you MUST create a numbered ToDo plan that breaks "
-        "the user's question into parts. Output this plan inside "
+        "Before answering, you MUST create a numbered ToDo plan."
+        "If [WEBSEARCH] results are present above, your plan MUST be based "  
+        "on those results and NOT on your training data alone.\n"  
+        "Output this plan inside "
         "<TRACE> and </TRACE> XML tags at the very beginning of your response.\n"
         "Inside <TRACE>, list each step as:\n"
         "  1. <step description>\n"
@@ -498,7 +500,7 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
         websearch_block = (
             "[WEBSEARCH — DuckDuckGo Results]\n"
             "The following real-time web search results were retrieved to "
-            "help answer the user's question. Use them as supporting context "
+            "help answer the user's question. Use them as main context "
             "where relevant, and cite the source URLs if you quote them.\n\n"
             f"{websearch_results}\n"
         )
@@ -511,12 +513,12 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
 
     # ── Assemble full system prompt ───────────
     system_content = role_block
+    if websearch_block:
+        system_content += "\n" + websearch_block
     if context_block:
         system_content += "\n" + context_block
     if output_block:
         system_content += "\n" + output_block
-    if websearch_block:
-        system_content += "\n" + websearch_block
     system_content += "\n" + trace_block
     system_content += "\n" + adaptive_block
 
