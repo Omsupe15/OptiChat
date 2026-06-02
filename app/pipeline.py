@@ -45,13 +45,16 @@ from app.pipeline_functions import (
     assemble_prompt,
     classify_question,
     classify_schema,
+    generate_cot_plan,
     invoke_model,
     load_memory_context,
     post_process,
     retrieve_long_term_memory,
     route_after_classify,
+    route_after_personalization,
     run_pipeline_until_prompt,
     score_and_filter_chunks,
+    second_web_search,
     stream_invoke_model,
 )
 
@@ -73,6 +76,9 @@ def _build_graph() -> StateGraph:
     graph.add_node("retrieve_long_term", retrieve_long_term_memory)
     graph.add_node("score_and_filter", score_and_filter_chunks)
     graph.add_node("apply_personalization", apply_personalization)
+    # Phase 5: dual web-search nodes (only visited when websearch is on)
+    graph.add_node("generate_cot_plan", generate_cot_plan)
+    graph.add_node("second_web_search", second_web_search)
     graph.add_node("assemble_prompt", assemble_prompt)
     graph.add_node("invoke_model", invoke_model)
     graph.add_node("post_process", post_process)
@@ -98,9 +104,23 @@ def _build_graph() -> StateGraph:
     # Long-term retrieval feeds into scoring
     graph.add_edge("retrieve_long_term", "score_and_filter")
 
-    # Scoring → personalization → assembly → invoke → post-process → END
+    # Scoring → personalization
     graph.add_edge("score_and_filter", "apply_personalization")
-    graph.add_edge("apply_personalization", "assemble_prompt")
+
+    # Phase 5: after personalization, conditionally run dual web-search or go
+    # straight to assembly.  Both DDGS passes complete before invoke_model.
+    graph.add_conditional_edges(
+        "apply_personalization",
+        route_after_personalization,
+        {
+            "generate_cot_plan": "generate_cot_plan",
+            "assemble_prompt": "assemble_prompt",
+        },
+    )
+    graph.add_edge("generate_cot_plan", "second_web_search")
+    graph.add_edge("second_web_search", "assemble_prompt")
+
+    # Assembly → invoke → post-process → END
     graph.add_edge("assemble_prompt", "invoke_model")
     graph.add_edge("invoke_model", "post_process")
     graph.add_edge("post_process", END)

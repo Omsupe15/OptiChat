@@ -476,17 +476,17 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
     # ── [CHAIN-OF-THOUGHT TRACE] block ────────
     trace_block = (
         "[CHAIN-OF-THOUGHT TRACE]\n"
-        "Before answering, you MUST create a numbered ToDo plan."
-        "If [WEBSEARCH] results are present above, your plan MUST be based "  
-        "on those results and NOT on your training data alone.\n"  
-        "Output this plan inside "
+        "Before answering, you MUST create a numbered ToDo plan that breaks "
+        "the user's question into parts. Output this plan inside "
         "<TRACE> and </TRACE> XML tags at the very beginning of your response.\n"
+        "IMPORTANT: If [WEBSEARCH] results are present above, your numbered plan "
+        "MUST be grounded in those web results then refine that data using your knowledge base.\n"
         "Inside <TRACE>, list each step as:\n"
         "  1. <step description>\n"
         "  2. <step description>\n"
         "  ...\n"
-        "After the closing </TRACE> tag, execute the plan step by step "
-        "and write your full response.\n"
+        "After the closing </TRACE> tag, execute the plan step by step strictly using the websearch and knowledge base results or if websearch is not available then only use the knowledge base.\n"
+        "Then write your full response strictly following the output format instructions.\n"
     )
 
     # ── [ADAPTIVE RESPONSE] block ─────────────
@@ -500,7 +500,7 @@ def assemble_prompt(state: PipelineState) -> PipelineState:
         websearch_block = (
             "[WEBSEARCH — DuckDuckGo Results]\n"
             "The following real-time web search results were retrieved to "
-            "help answer the user's question. Use them as main context "
+            "help answer the user's question. Use them as context "
             "where relevant, and cite the source URLs if you quote them.\n\n"
             f"{websearch_results}\n"
         )
@@ -726,12 +726,22 @@ async def run_pipeline_until_prompt(state: PipelineState) -> PipelineState:
     ready.  This is used by the streaming path so the caller can hand
     the final prompt to :func:`stream_invoke_model` before committing
     to a full non-streaming ``ainvoke`` call.
+
+    Phase 5: when ``websearch_enabled`` is True the function additionally
+    runs :func:`generate_cot_plan` (mini model call → CoT plan) and
+    :func:`second_web_search` (refined DDGS query from the plan) before
+    ``assemble_prompt``, guaranteeing that **streaming only starts after
+    both web-search passes are complete**.
     """
     state = classify_question(state)
     state = classify_schema(state)
     state = retrieve_long_term_memory(state)
     state = score_and_filter_chunks(state)
     state = apply_personalization(state)
+    # ── Phase 5: dual web-search pass (both finish before streaming) ──
+    if state.get("websearch_enabled", False):
+        state = await generate_cot_plan(state)
+        state = second_web_search(state)
     state = assemble_prompt(state)
     return state
 
@@ -804,6 +814,116 @@ def route_after_classify(state: PipelineState) -> str:
     if state.get("needs_long_term", True):
         return "retrieve_long_term"
     return "score_and_filter"
+
+
+def route_after_personalization(state: PipelineState) -> str:
+    """Route to CoT-plan generation when websearch is on, else go straight to assembly.
+
+    When websearch is enabled the graph visits ``generate_cot_plan`` →
+    ``second_web_search`` before ``assemble_prompt`` so that both DDGS
+    passes complete *before* the LLM streaming call begins.
+    """
+    if state.get("websearch_enabled", False):
+        return "generate_cot_plan"
+    return "assemble_prompt"
+
+
+# ══════════════════════════════════════════════
+#  Phase 5 Node: Generate CoT Plan (mini model call)
+# ══════════════════════════════════════════════
+
+async def generate_cot_plan(state: PipelineState) -> PipelineState:
+    """Make a lightweight model call to produce a numbered CoT plan.
+
+    Uses the first-pass DuckDuckGo results + user question to ask the
+    model for ONLY a ``<TRACE>`` numbered plan (no full response).  The
+    plan is stored in ``trace_log`` and consumed by :func:`second_web_search`
+    as a refined search query.
+
+    Skipped silently if ``websearch_enabled`` is False.
+    """
+    if not state.get("websearch_enabled", False):
+        return state
+
+    from app.connect_models import get_chat_model
+
+    websearch_results = state.get("websearch_results", "")
+    user_input = state["user_input"]
+
+    ws_section = (
+        f"[WEBSEARCH RESULTS — Pass 1]\n{websearch_results}\n\n"
+        if websearch_results
+        else ""
+    )
+
+    plan_system = (
+        f"{ws_section}"
+        "You are a planning assistant. Using the web search results above "
+        "(and your knowledge only where results are absent), produce a "
+        "concise numbered ToDo plan that breaks the user question into "
+        "answerable steps. "
+        "Output the plan inside <TRACE>...</TRACE> tags ONLY. "
+        "Do NOT write a full response — just the plan."
+    )
+
+    try:
+        model = get_chat_model(state["model_id"])
+        response = await model.ainvoke([
+            SystemMessage(content=plan_system),
+            HumanMessage(content=user_input),
+        ])
+        raw = str(response.content)
+        trace_log, _ = _extract_trace(raw)
+        # Fallback: model skipped TRACE tags — use full output as plan
+        if not trace_log:
+            trace_log = raw.strip()
+        logger.info("CoT plan generated (%d chars)", len(trace_log))
+        return {**state, "trace_log": trace_log}
+    except Exception:
+        logger.exception("generate_cot_plan failed — second web search will be skipped")
+        return state
+
+
+# ══════════════════════════════════════════════
+#  Phase 5 Node: Second Web Search (refined query)
+# ══════════════════════════════════════════════
+
+def second_web_search(state: PipelineState) -> PipelineState:
+    """Run a second DDGS search using the CoT plan as a refined query.
+
+    Merges Pass-2 results with the first-pass results already stored in
+    ``websearch_results``.  After merging, ``trace_log`` is cleared so
+    that the streaming response can populate it fresh from the model's
+    own ``<TRACE>`` output.
+
+    Skipped silently if ``websearch_enabled`` is False or no plan exists.
+    """
+    if not state.get("websearch_enabled", False):
+        return state
+
+    plan = state.get("trace_log", "").strip()
+    if not plan:
+        return state
+
+    # Use first 200 chars of the plan as the refined search query
+    refined_query = plan[:200]
+    logger.info("Second web search — refined query from CoT plan: %s", refined_query[:80])
+
+    second_results = perform_web_search(refined_query, max_results=5)
+
+    first_results = state.get("websearch_results", "")
+    parts: list[str] = []
+    if first_results:
+        parts.append("[Pass-1 Web Results — initial query]\n" + first_results)
+    if second_results:
+        parts.append("[Pass-2 Web Results — refined from CoT plan]\n" + second_results)
+    merged = "\n\n".join(parts)
+
+    return {
+        **state,
+        "websearch_results": merged,
+        "trace_log": "",   # Reset — streaming response repopulates this
+    }
 
 
 # ══════════════════════════════════════════════
