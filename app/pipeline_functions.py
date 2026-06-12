@@ -327,96 +327,143 @@ def _normalize_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-async def classifier_agent(state: PipelineState) -> PipelineState:
-    """LLM sub-agent for question classification and memory routing."""
+async def unified_classifier_agent(state: PipelineState) -> PipelineState:
+    """Single LLM call combining classifier, schema, and personalization.
+
+    Replaces the sequential ``classifier_agent`` → ``schema_agent`` →
+    ``personalization_agent`` chain with one round-trip to cut latency.
+    """
     user_input = state["user_input"]
     user_lower = user_input.lower()
+
+    # ── Deterministic pre-computation (free, no LLM) ──────────────
     context_hint, needs_long_term = _memory_overlap_hint(
         user_input,
         state.get("short_term", []),
         state.get("lru_cached", []),
     )
+    heuristic_category = _heuristic_category(user_lower)
+    heuristic_complexity = _heuristic_complexity(user_lower)
+    depth_map = {"simple": "quick", "moderate": "standard", "complex": "detailed"}
+    heuristic_depth = depth_map.get(heuristic_complexity, "standard")
+
+    try:
+        cfg = db.load_config()
+        memory_enabled = cfg.get("memory_enabled", True)
+    except Exception:
+        logger.exception("Config load failed during unified classification")
+        memory_enabled = True
+
+    personalized = mem.load_personalized_memory() if memory_enabled else {}
+
+    # ── Combined fallback ─────────────────────────────────────────
     fallback = {
-        "question_type": _heuristic_category(user_lower),
-        "complexity": _heuristic_complexity(user_lower),
+        "question_type": heuristic_category,
+        "complexity": heuristic_complexity,
         "language": "English",
         "needs_long_term": needs_long_term,
         "context_hint": context_hint,
         "memory_path": "long_term" if needs_long_term else "short_lru",
+        "schema_category": heuristic_category,
+        "schema_depth": heuristic_depth,
+        "personalization_summary": (
+            "Use default assistant behavior." if not personalized
+            else "Use stored user preferences where relevant."
+        ),
+        "relevant_preferences": (
+            personalized.get("preferences", {})
+            if isinstance(personalized, dict) else {}
+        ),
     }
+
+    # ── Single LLM call ───────────────────────────────────────────
     result, state = await _agent_json_call(
         state,
-        "classifier_agent",
+        "unified_classifier_agent",
         (
-            "Classify the user's message. Choose complexity as simple, moderate, "
-            "or complex. Decide whether long-term memory is needed after reviewing "
-            "the local memory hints. Return keys: question_type, complexity, "
-            "language, needs_long_term, context_hint, memory_path."
+            "You are a combined classification agent. Perform ALL of these tasks "
+            "in one JSON response:\n"
+            "1. CLASSIFY the user's message: return question_type, complexity "
+            "(simple/moderate/complex), language, needs_long_term (bool), "
+            "context_hint (string), memory_path (long_term or short_lru).\n"
+            "2. SELECT output schema: return schema_category (one of "
+            f"{list(OUTPUT_SCHEMAS.keys())}) and schema_depth (quick/standard/detailed).\n"
+            "3. PERSONALIZE: return personalization_summary (one sentence) and "
+            "relevant_preferences (object with only relevant user prefs).\n\n"
+            "Return a single JSON object with ALL these keys."
         ),
         {
             "user_input": user_input,
             "short_term_recent": state.get("short_term", [])[-5:],
             "lru_cached_recent": state.get("lru_cached", [])[-5:],
+            "personalized_memory": personalized,
+            "available_schemas": OUTPUT_SCHEMAS,
             "heuristic_fallback": fallback,
         },
         fallback,
     )
+
+    # ── Parse classification fields ───────────────────────────────
     complexity = str(result.get("complexity", fallback["complexity"])).lower()
     if complexity not in {"simple", "moderate", "complex"}:
         complexity = fallback["complexity"]
 
-    return {
-        **state,
-        "question_type": str(result.get("question_type", fallback["question_type"])),
-        "complexity": complexity,
-        "language": str(result.get("language", fallback["language"])),
-        "needs_long_term": _normalize_bool(result.get("needs_long_term"), fallback["needs_long_term"]),
-        "context_hint": str(result.get("context_hint", fallback["context_hint"])).strip(),
-        "memory_path": str(result.get("memory_path", fallback["memory_path"])),
-    }
+    question_type = str(result.get("question_type", fallback["question_type"]))
+    language = str(result.get("language", fallback["language"]))
+    lt = _normalize_bool(result.get("needs_long_term"), fallback["needs_long_term"])
+    c_hint = str(result.get("context_hint", fallback["context_hint"])).strip()
+    m_path = str(result.get("memory_path", fallback["memory_path"]))
 
-
-async def schema_agent(state: PipelineState) -> PipelineState:
-    """LLM sub-agent for output schema selection."""
-    user_lower = state["user_input"].lower()
-    fallback_category = _heuristic_category(user_lower)
-    fallback_depth = {
-        "simple": "quick",
-        "moderate": "standard",
-        "complex": "detailed",
-    }.get(state.get("complexity", "moderate"), "standard")
-    fallback = {
-        "schema_category": fallback_category,
-        "schema_depth": fallback_depth,
-    }
-    result, state = await _agent_json_call(
-        state,
-        "schema_agent",
-        (
-            "Select exactly one schema_category and schema_depth for the answer. "
-            f"Allowed categories: {list(OUTPUT_SCHEMAS.keys())}. "
-            "Allowed depths: quick, standard, detailed."
-        ),
-        {
-            "user_input": state["user_input"],
-            "question_type": state.get("question_type"),
-            "complexity": state.get("complexity"),
-            "available_schemas": OUTPUT_SCHEMAS,
-        },
-        fallback,
-    )
-    category = str(result.get("schema_category", fallback_category))
+    # ── Parse schema fields ───────────────────────────────────────
+    category = str(result.get("schema_category", fallback["schema_category"]))
     if category not in OUTPUT_SCHEMAS:
-        category = fallback_category
-    depth = str(result.get("schema_depth", fallback_depth))
+        category = fallback["schema_category"]
+    depth = str(result.get("schema_depth", fallback["schema_depth"]))
     if depth not in OUTPUT_SCHEMAS[category]:
-        depth = fallback_depth
+        depth = fallback["schema_depth"]
+
+    # ── Parse personalization fields ──────────────────────────────
+    p_summary = str(
+        result.get("personalization_summary", fallback["personalization_summary"])
+    )
+    rel_prefs = result.get("relevant_preferences", fallback["relevant_preferences"])
+    if isinstance(personalized, dict):
+        personalized = {**personalized, "relevant_preferences": rel_prefs}
+
     return {
         **state,
+        "question_type": question_type,
+        "complexity": complexity,
+        "language": language,
+        "needs_long_term": lt,
+        "context_hint": c_hint,
+        "memory_path": m_path,
         "schema_category": category,
         "schema_depth": depth,
         "selected_output_schema": OUTPUT_SCHEMAS[category][depth],
+        "personalized": personalized,
+        "personalization_summary": p_summary,
     }
+
+
+# ── Legacy wrappers (kept for backward-compat / non-streaming path) ──
+
+
+async def classifier_agent(state: PipelineState) -> PipelineState:
+    """Legacy: now delegates to unified_classifier_agent."""
+    return await unified_classifier_agent(state)
+
+
+async def schema_agent(state: PipelineState) -> PipelineState:
+    """Legacy: classification + schema handled by unified_classifier_agent."""
+    # Already resolved by unified call; return state unchanged.
+    return state
+
+
+async def personalization_agent(state: PipelineState) -> PipelineState:
+    """Legacy: personalization handled by unified_classifier_agent."""
+    # Already resolved by unified call; return state unchanged.
+    return state
 
 
 async def memory_agent(state: PipelineState) -> PipelineState:
@@ -472,45 +519,6 @@ async def memory_agent(state: PipelineState) -> PipelineState:
         "memory_used": memory_used,
         "memory_path": str(result.get("memory_path", fallback["memory_path"])),
         "context_hint": str(result.get("context_hint", fallback["context_hint"])).strip(),
-    }
-
-
-async def personalization_agent(state: PipelineState) -> PipelineState:
-    """LLM sub-agent for selecting relevant personalization context."""
-    try:
-        cfg = db.load_config()
-        memory_enabled = cfg.get("memory_enabled", True)
-    except Exception:
-        logger.exception("Config load failed during personalization")
-        memory_enabled = True
-
-    personalized = mem.load_personalized_memory() if memory_enabled else {}
-    fallback = {
-        "personalization_summary": "Use default assistant behavior." if not personalized else "Use stored user preferences where relevant.",
-        "relevant_preferences": personalized.get("preferences", {}) if isinstance(personalized, dict) else {},
-    }
-    result, state = await _agent_json_call(
-        state,
-        "personalization_agent",
-        (
-            "Select only personalization details relevant to this message. Return "
-            "personalization_summary and relevant_preferences. Keep it concise."
-        ),
-        {
-            "user_input": state["user_input"],
-            "personalized_memory": personalized,
-        },
-        fallback,
-    )
-    if isinstance(personalized, dict):
-        personalized = {
-            **personalized,
-            "relevant_preferences": result.get("relevant_preferences", fallback["relevant_preferences"]),
-        }
-    return {
-        **state,
-        "personalized": personalized,
-        "personalization_summary": str(result.get("personalization_summary", fallback["personalization_summary"])),
     }
 
 
@@ -927,11 +935,13 @@ async def post_process_agent(state: PipelineState) -> PipelineState:
 
 
 async def run_pipeline_until_prompt(state: PipelineState) -> PipelineState:
-    """Run all pre-response sub-agents before streaming starts."""
-    state = await classifier_agent(state)
-    state = await schema_agent(state)
+    """Run all pre-response sub-agents before streaming starts.
+
+    Uses the unified classifier (1 LLM call instead of 3) followed by
+    memory, optional websearch, and prompt assembly.
+    """
+    state = await unified_classifier_agent(state)
     state = await memory_agent(state)
-    state = await personalization_agent(state)
     if state.get("websearch_enabled", False):
         state = await websearch_agent(state)
     state = await prompt_assembly_agent(state)
@@ -1015,11 +1025,11 @@ _ADAPTIVE_INSTRUCTIONS: dict[str, str] = {
 def _build_adaptive_instructions(complexity: str) -> str:
     return _ADAPTIVE_INSTRUCTIONS.get(complexity, _ADAPTIVE_INSTRUCTIONS["moderate"])
 
-classify_question = classifier_agent
-classify_schema = schema_agent
+classify_question = unified_classifier_agent
+classify_schema = unified_classifier_agent
 retrieve_long_term_memory = memory_agent
 score_and_filter_chunks = memory_agent
-apply_personalization = personalization_agent
+apply_personalization = unified_classifier_agent
 assemble_prompt = prompt_assembly_agent
 invoke_model = response_agent
 post_process = post_process_agent

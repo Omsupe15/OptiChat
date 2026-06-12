@@ -25,10 +25,24 @@ from app.pipeline_functions import (
     run_pipeline_until_prompt,
     schema_agent,
     stream_invoke_model,
+    unified_classifier_agent,
     websearch_agent,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class TraceLogChunk:
+    """Sentinel yielded to stream trace-log lines to the UI.
+
+    Emitted *before* the LLM response stream begins so that the user
+    sees pipeline activity while the pre-flight agents finish.
+    """
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
 
 
 def _build_graph():
@@ -156,6 +170,13 @@ async def stream_pipeline(
 
     state = await run_pipeline_until_prompt(state)
 
+    # ── Yield trace log lines BEFORE the response stream ──────────
+    trace_log = state.get("visible_trace_log", "")
+    if trace_log:
+        for line in trace_log.splitlines(keepends=True):
+            yield TraceLogChunk(line)
+
+    # ── Stream the LLM response tokens ────────────────────────────
     done: StreamDone | None = None
     async for item in stream_invoke_model(state):
         if isinstance(item, StreamDone):
@@ -165,7 +186,7 @@ async def stream_pipeline(
 
     if done is None:
         done = StreamDone(
-            trace_log=state.get("visible_trace_log", ""),
+            trace_log=trace_log,
             response="",
             raw_response="",
             error="Stream ended without a StreamDone sentinel.",

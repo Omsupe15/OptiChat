@@ -40,7 +40,7 @@ from textual.widgets import (
 
 import app.connect_models as cm
 from app.connect_models import send_message, send_message_via_pipeline, stream_message
-from app.pipeline import stream_pipeline
+from app.pipeline import stream_pipeline, TraceLogChunk
 from app.pipeline_functions import StreamDone
 import app.memory as mem
 import db.database as db
@@ -360,6 +360,7 @@ class OptiChatApp(App):
             await container.mount(stream_bubble)
             container.scroll_end(animate=False)
 
+            response_started = False
             try:
                 async for item in stream_pipeline(
                     user_input=user_text,
@@ -368,22 +369,29 @@ class OptiChatApp(App):
                     model_id=model_id,
                     websearch_enabled=self.websearch_enabled,
                 ):
-                    if isinstance(item, StreamDone):
+                    if isinstance(item, TraceLogChunk):
+                        # Stream trace-log lines ABOVE the response
+                        await stream_bubble.append_trace(item.text)
+                        container.scroll_end(animate=False)
+                    elif isinstance(item, StreamDone):
                         trace_log = item.trace_log
                         reply = item.response
                         if item.error:
                             reply = f"*Error communicating with model:* `{item.error}`"
-                        # Finalise the bubble: set full content + add trace
-                        await stream_bubble.finish_streaming(trace_log)
+                        # Finalise the bubble (trace already shown above)
+                        await stream_bubble.finish_streaming()
                         container.scroll_end(animate=False)
                     else:
                         # Plain token string – append to live bubble
+                        if not response_started:
+                            stream_bubble.start_response()
+                            response_started = True
                         stream_bubble.append_token(item)
                         container.scroll_end(animate=False)
             except Exception as exc:
                 reply = f"*Error communicating with model:* `{exc}`"
                 stream_bubble.append_token(reply)
-                await stream_bubble.finish_streaming("")
+                await stream_bubble.finish_streaming()
                 db.add_message(chat_id, "user", user_text)
                 db.add_message(chat_id, "assistant", reply)
         else:

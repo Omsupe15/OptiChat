@@ -164,24 +164,101 @@ class ChatMessage(Static):
 #  Streaming Chat Message bubble
 # ──────────────────────────────────────────────
 class StreamingChatMessage(Static):
-    """Assistant message bubble that supports live token streaming.
+    """Assistant message bubble that supports live trace-log and token streaming.
 
     Usage
     -----
     1. Mount this widget into the conversation container.
-    2. Call ``append_token(text)`` for each token chunk received from the LLM.
-    3. Call ``finish_streaming(trace_log)`` once the stream ends to finalise
-       the Markdown content and mount the "Chat Trace Logs" Collapsible.
+    2. Call ``append_trace(line)`` for each trace-log line as agents complete.
+       The trace Collapsible is shown ABOVE the response with the first few
+       lines visible and the rest accessible by expanding the Collapsible.
+    3. Call ``start_response()`` when all trace lines are done and the LLM
+       response stream is about to begin.
+    4. Call ``append_token(text)`` for each token chunk received from the LLM.
+    5. Call ``finish_streaming()`` once the stream ends to finalise the
+       Markdown content.  No trace log is appended at the end because it was
+       already streamed above.
     """
+
+    # Number of trace-log lines always visible above the Collapsible toggle
+    TRACE_PREVIEW_LINES = 4
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._accumulated: str = ""
+        self._trace_lines: list[str] = []
+        self._trace_mounted: bool = False
         self.add_class("msg-assistant")
 
     def compose(self) -> ComposeResult:
         yield Static("[bold]OptiChat[/bold]", classes="msg-role-label")
+        # Placeholder for the trace-log Collapsible (mounted dynamically)
+        yield Vertical(id=f"stream-trace-area-{id(self)}")
         yield Markdown("", classes="msg-body", id=f"stream-md-{id(self)}")
+
+    async def append_trace(self, line: str) -> None:
+        """Append a trace-log *line* and refresh the trace preview area."""
+        self._trace_lines.append(line)
+        await self._refresh_trace()
+
+    async def _refresh_trace(self) -> None:
+        """Mount or update the trace-log Collapsible above the response."""
+        full_text = "".join(self._trace_lines)
+        if not full_text.strip():
+            return
+
+        lines_list = full_text.splitlines(keepends=True)
+        # First few lines are always visible as a preview
+        preview = "".join(lines_list[: self.TRACE_PREVIEW_LINES])
+        rest = "".join(lines_list[self.TRACE_PREVIEW_LINES :])
+
+        try:
+            area = self.query_one(f"#stream-trace-area-{id(self)}", Vertical)
+        except Exception:
+            return
+
+        if not self._trace_mounted:
+            # First mount: create the preview Static + Collapsible
+            preview_widget = Static(
+                preview.rstrip(),
+                id=f"trace-preview-{id(self)}",
+                classes="trace-preview",
+            )
+            collapsible_md = Markdown(
+                f"**Full Trace Log:**\n\n{full_text}",
+                classes="trace-body",
+            )
+            collapsible = Collapsible(
+                collapsible_md,
+                title="Chat Trace Logs",
+                collapsed=True,
+                classes="trace-collapsible",
+                id=f"trace-collapsible-{id(self)}",
+            )
+            await area.mount(preview_widget)
+            await area.mount(collapsible)
+            self._trace_mounted = True
+        else:
+            # Update existing widgets
+            try:
+                pw = self.query_one(f"#trace-preview-{id(self)}", Static)
+                pw.update(preview.rstrip())
+            except Exception:
+                pass
+            try:
+                col = self.query_one(f"#trace-collapsible-{id(self)}", Collapsible)
+                # Update the Markdown inside the Collapsible
+                for child in col.children:
+                    if isinstance(child, Markdown):
+                        child.update(f"**Full Trace Log:**\n\n{full_text}")
+                        break
+            except Exception:
+                pass
+
+    def start_response(self) -> None:
+        """Signal that trace streaming is done and response streaming begins."""
+        # Nothing to do structurally; the Markdown widget is already in place.
+        pass
 
     def append_token(self, text: str) -> None:
         """Append *text* to the live Markdown widget."""
@@ -192,32 +269,17 @@ class StreamingChatMessage(Static):
         except Exception:
             pass
 
-    async def finish_streaming(self, trace_log: str = "") -> None:
+    async def finish_streaming(self) -> None:
         """Finalize the message.
 
-        Ensures the Markdown shows the complete response text, then mounts
-        the "Chat Trace Logs" Collapsible below it when *trace_log* is
-        non-empty.  Must be awaited so Textual has time to complete the
-        widget mount before the caller continues.
+        Ensures the Markdown shows the complete response text.
+        Trace logs are already shown above, so nothing is appended here.
         """
         try:
             md = self.query_one(f"#stream-md-{id(self)}", Markdown)
             md.update(self._accumulated)
         except Exception:
             pass
-
-        if trace_log:
-            trace_md = Markdown(
-                f"**Model's Chain-of-Thought Plan:**\n\n{trace_log}",
-                classes="trace-body",
-            )
-            collapsible = Collapsible(
-                trace_md,
-                title="Chat Trace Logs",
-                collapsed=True,
-                classes="trace-collapsible",
-            )
-            await self.mount(collapsible)
 
 
 # ──────────────────────────────────────────────
