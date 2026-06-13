@@ -56,6 +56,9 @@ class PipelineState(TypedDict, total=False):
     web_sources: list[dict[str, Any]]
     web_summary: str
 
+    needs_memory: bool
+    needs_websearch: bool
+
     agent_logs: list[dict[str, Any]]
     agent_errors: list[str]
     visible_trace_log: str
@@ -327,11 +330,11 @@ def _normalize_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-async def unified_classifier_agent(state: PipelineState) -> PipelineState:
-    """Single LLM call combining classifier, schema, and personalization.
+async def orchestrator_agent(state: PipelineState) -> PipelineState:
+    """Single LLM call combining classifier + orchestrator.
 
-    Replaces the sequential ``classifier_agent`` → ``schema_agent`` →
-    ``personalization_agent`` chain with one round-trip to cut latency.
+    Classifies the question AND decides which sub-agents (memory, websearch)
+    are required.  Replaces the old ``unified_classifier_agent``.
     """
     user_input = state["user_input"]
     user_lower = user_input.lower()
@@ -351,10 +354,12 @@ async def unified_classifier_agent(state: PipelineState) -> PipelineState:
         cfg = db.load_config()
         memory_enabled = cfg.get("memory_enabled", True)
     except Exception:
-        logger.exception("Config load failed during unified classification")
+        logger.exception("Config load failed during orchestrator classification")
         memory_enabled = True
 
     personalized = mem.load_personalized_memory() if memory_enabled else {}
+
+    websearch_toggle = state.get("websearch_enabled", False)
 
     # ── Combined fallback ─────────────────────────────────────────
     fallback = {
@@ -374,22 +379,35 @@ async def unified_classifier_agent(state: PipelineState) -> PipelineState:
             personalized.get("preferences", {})
             if isinstance(personalized, dict) else {}
         ),
+        "needs_memory": needs_long_term,
+        "needs_websearch": websearch_toggle,
     }
 
     # ── Single LLM call ───────────────────────────────────────────
     result, state = await _agent_json_call(
         state,
-        "unified_classifier_agent",
+        "orchestrator_agent",
         (
-            "You are a combined classification agent. Perform ALL of these tasks "
-            "in one JSON response:\n"
-            "1. CLASSIFY the user's message: return question_type, complexity "
-            "(simple/moderate/complex), language, needs_long_term (bool), "
-            "context_hint (string), memory_path (long_term or short_lru).\n"
+            "You are the Orchestrator Agent in OptiChat. Perform ALL of these "
+            "tasks in one JSON response:\n"
+            "1. UNDERSTAND the question: determine whether user wants a "
+            "detailed answer or short answer → return complexity "
+            "(simple/moderate/complex).\n"
             "2. SELECT output schema: return schema_category (one of "
-            f"{list(OUTPUT_SCHEMAS.keys())}) and schema_depth (quick/standard/detailed).\n"
-            "3. PERSONALIZE: return personalization_summary (one sentence) and "
-            "relevant_preferences (object with only relevant user prefs).\n\n"
+            f"{list(OUTPUT_SCHEMAS.keys())}) and schema_depth "
+            "(quick/standard/detailed).\n"
+            "3. PERSONALIZE: decide if personalisation is relevant → return "
+            "personalization_summary (one sentence) and relevant_preferences.\n"
+            "4. MEMORY: decide if memory retrieval is required (true only if "
+            "the question seems related to previous conversation) → return "
+            "needs_memory (bool).\n"
+            "5. WEBSEARCH: decide if web search is required (true only if the "
+            "question needs recent/current data the model may not have, e.g. "
+            "current events, recent news, latest research). The user's websearch "
+            f"toggle is {'ON' if websearch_toggle else 'OFF'}. If toggle is OFF, "
+            "needs_websearch must be false. → return needs_websearch (bool).\n"
+            "6. Also return question_type, language, needs_long_term (bool), "
+            "context_hint (string), memory_path (long_term or short_lru).\n\n"
             "Return a single JSON object with ALL these keys."
         ),
         {
@@ -398,6 +416,7 @@ async def unified_classifier_agent(state: PipelineState) -> PipelineState:
             "lru_cached_recent": state.get("lru_cached", [])[-5:],
             "personalized_memory": personalized,
             "available_schemas": OUTPUT_SCHEMAS,
+            "websearch_toggle": websearch_toggle,
             "heuristic_fallback": fallback,
         },
         fallback,
@@ -430,6 +449,17 @@ async def unified_classifier_agent(state: PipelineState) -> PipelineState:
     if isinstance(personalized, dict):
         personalized = {**personalized, "relevant_preferences": rel_prefs}
 
+    # ── Parse sub-agent routing decisions ─────────────────────────
+    needs_memory = _normalize_bool(
+        result.get("needs_memory"), fallback["needs_memory"]
+    )
+    needs_websearch = _normalize_bool(
+        result.get("needs_websearch"), fallback["needs_websearch"]
+    )
+    # Websearch cannot be enabled if the user toggle is OFF
+    if not websearch_toggle:
+        needs_websearch = False
+
     return {
         **state,
         "question_type": question_type,
@@ -443,26 +473,28 @@ async def unified_classifier_agent(state: PipelineState) -> PipelineState:
         "selected_output_schema": OUTPUT_SCHEMAS[category][depth],
         "personalized": personalized,
         "personalization_summary": p_summary,
+        "needs_memory": needs_memory,
+        "needs_websearch": needs_websearch,
     }
 
 
 # ── Legacy wrappers (kept for backward-compat / non-streaming path) ──
 
+unified_classifier_agent = orchestrator_agent
+
 
 async def classifier_agent(state: PipelineState) -> PipelineState:
-    """Legacy: now delegates to unified_classifier_agent."""
-    return await unified_classifier_agent(state)
+    """Legacy: now delegates to orchestrator_agent."""
+    return await orchestrator_agent(state)
 
 
 async def schema_agent(state: PipelineState) -> PipelineState:
-    """Legacy: classification + schema handled by unified_classifier_agent."""
-    # Already resolved by unified call; return state unchanged.
+    """Legacy: classification + schema handled by orchestrator_agent."""
     return state
 
 
 async def personalization_agent(state: PipelineState) -> PipelineState:
-    """Legacy: personalization handled by unified_classifier_agent."""
-    # Already resolved by unified call; return state unchanged.
+    """Legacy: personalization handled by orchestrator_agent."""
     return state
 
 
@@ -935,17 +967,110 @@ async def post_process_agent(state: PipelineState) -> PipelineState:
 
 
 async def run_pipeline_until_prompt(state: PipelineState) -> PipelineState:
-    """Run all pre-response sub-agents before streaming starts.
+    """Run all pre-response sub-agents before streaming starts (non-streaming).
 
-    Uses the unified classifier (1 LLM call instead of 3) followed by
-    memory, optional websearch, and prompt assembly.
+    Uses the orchestrator agent (1 LLM call) followed by conditional
+    memory / websearch and prompt assembly.
     """
-    state = await unified_classifier_agent(state)
-    state = await memory_agent(state)
-    if state.get("websearch_enabled", False):
+    state = await orchestrator_agent(state)
+    needs_memory = state.get("needs_memory", False)
+    needs_websearch = state.get("needs_websearch", False)
+
+    if needs_memory and needs_websearch:
+        mem_state, web_state = await asyncio.gather(
+            memory_agent(state),
+            websearch_agent(state),
+        )
+        state = {**state, **mem_state, **web_state}
+    elif needs_memory:
+        state = await memory_agent(state)
+    elif needs_websearch:
         state = await websearch_agent(state)
+
     state = await prompt_assembly_agent(state)
     return state
+
+
+class _TraceChunk:
+    """Internal sentinel used by run_pipeline_streaming."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+async def run_pipeline_streaming(state: PipelineState):
+    """Streaming variant of the pre-response pipeline.
+
+    Yields ``_TraceChunk`` objects as each stage completes so the UI can
+    stream trace-log lines into a Collapsible widget in real time.
+    After all pre-flight work is done, yields the updated *state* dict as
+    the final item.
+    """
+
+    # ── 1. Orchestrator agent ─────────────────────────────────────
+    state = await orchestrator_agent(state)
+
+    complexity = state.get("complexity", "moderate")
+    yield _TraceChunk(f"📋 **Response type:** {complexity}\n")
+
+    category = state.get("schema_category", "unknown")
+    depth = state.get("schema_depth", "standard")
+    yield _TraceChunk(f"📐 **Output schema:** {category} / {depth}\n")
+
+    p_summary = state.get("personalization_summary", "")
+    if p_summary:
+        yield _TraceChunk(f"👤 **Personalization:** {p_summary}\n")
+
+    needs_memory = state.get("needs_memory", False)
+    needs_websearch = state.get("needs_websearch", False)
+
+    yield _TraceChunk(
+        f"🧠 **Memory retrieval:** {'required' if needs_memory else 'not required'}\n"
+    )
+    yield _TraceChunk(
+        f"🌐 **Web search:** {'required' if needs_websearch else 'not required'}\n"
+    )
+
+    # ── 2. Conditional sub-agents (concurrent if both needed) ─────
+    if needs_memory and needs_websearch:
+        yield _TraceChunk("\n🔄 Searching web for sources & recalling from old chats...\n")
+        mem_state, web_state = await asyncio.gather(
+            memory_agent(state),
+            websearch_agent(state),
+        )
+        state = {**state, **mem_state, **web_state}
+    elif needs_memory:
+        yield _TraceChunk("\n🔄 Recalling from old chats...\n")
+        state = await memory_agent(state)
+    elif needs_websearch:
+        yield _TraceChunk("\n🔄 Searching web for sources...\n")
+        state = await websearch_agent(state)
+
+    # Emit search/memory results into trace if applicable
+    if needs_websearch and state.get("search_queries"):
+        yield _TraceChunk("\n**Search queries:**\n")
+        for q in state.get("search_queries", []):
+            yield _TraceChunk(f"- {q}\n")
+    if needs_websearch and state.get("web_sources"):
+        yield _TraceChunk("\n**Selected sources:**\n")
+        for src in state.get("web_sources", [])[:6]:
+            yield _TraceChunk(f"- {src.get('title', '')}: {src.get('url', '')}\n")
+
+    # ── 3. Prompt assembly ────────────────────────────────────────
+    state = await prompt_assembly_agent(state)
+
+    if state.get("answer_plan"):
+        yield _TraceChunk("\n**Action plan:**\n")
+        for i, step in enumerate(state.get("answer_plan", []), 1):
+            yield _TraceChunk(f"{i}. {step}\n")
+
+    # ── 4. Signal that LLM generation is about to start ───────────
+    yield _TraceChunk("\n⏳ Generating...\n")
+
+    # Final item: the fully prepared state
+    yield state
 
 
 async def load_memory_context(chat_name: str, chat_id: str) -> dict[str, Any]:
@@ -1025,11 +1150,11 @@ _ADAPTIVE_INSTRUCTIONS: dict[str, str] = {
 def _build_adaptive_instructions(complexity: str) -> str:
     return _ADAPTIVE_INSTRUCTIONS.get(complexity, _ADAPTIVE_INSTRUCTIONS["moderate"])
 
-classify_question = unified_classifier_agent
-classify_schema = unified_classifier_agent
+classify_question = orchestrator_agent
+classify_schema = orchestrator_agent
 retrieve_long_term_memory = memory_agent
 score_and_filter_chunks = memory_agent
-apply_personalization = unified_classifier_agent
+apply_personalization = orchestrator_agent
 assemble_prompt = prompt_assembly_agent
 invoke_model = response_agent
 post_process = post_process_agent

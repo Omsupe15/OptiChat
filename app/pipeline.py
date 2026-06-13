@@ -14,18 +14,20 @@ from langgraph.graph import END, StateGraph
 from app.pipeline_functions import (
     PipelineState,
     StreamDone,
+    _TraceChunk,
     classifier_agent,
     load_memory_context,
     memory_agent,
+    orchestrator_agent,
     personalization_agent,
     post_process_agent,
     prompt_assembly_agent,
     response_agent,
     route_after_personalization,
+    run_pipeline_streaming,
     run_pipeline_until_prompt,
     schema_agent,
     stream_invoke_model,
-    unified_classifier_agent,
     websearch_agent,
 )
 
@@ -100,6 +102,8 @@ async def _initial_state(
         "search_queries": [],
         "web_sources": [],
         "web_summary": "",
+        "needs_memory": False,
+        "needs_websearch": False,
         "short_term": mem_context["short_term"],
         "lru_cached": mem_context["lru_cached"],
         "personalized": mem_context["personalized"],
@@ -157,8 +161,10 @@ async def stream_pipeline(
 ):
     """Streaming variant of the sub-agent pipeline.
 
-    All pre-response agents, including websearch when enabled, finish before
-    token streaming starts. The final item yielded is ``StreamDone``.
+    Uses ``run_pipeline_streaming`` which yields trace-log chunks
+    progressively as each stage (orchestrator, memory, websearch, prompt
+    assembly) completes.  Once the pre-flight pipeline finishes, LLM
+    response tokens are streamed.  The final item yielded is ``StreamDone``.
     """
     state = await _initial_state(
         user_input,
@@ -168,13 +174,25 @@ async def stream_pipeline(
         websearch_enabled=websearch_enabled,
     )
 
-    state = await run_pipeline_until_prompt(state)
+    # ── Stream trace-log lines as pre-flight agents run ───────────
+    prepared_state: PipelineState | None = None
+    async for item in run_pipeline_streaming(state):
+        if isinstance(item, _TraceChunk):
+            yield TraceLogChunk(item.text)
+        elif isinstance(item, dict):
+            # Final item from run_pipeline_streaming is the prepared state
+            prepared_state = item
 
-    # ── Yield trace log lines BEFORE the response stream ──────────
-    trace_log = state.get("visible_trace_log", "")
-    if trace_log:
-        for line in trace_log.splitlines(keepends=True):
-            yield TraceLogChunk(line)
+    if prepared_state is None:
+        yield StreamDone(
+            trace_log="",
+            response="",
+            raw_response="",
+            error="Pipeline streaming ended without producing a state.",
+        )
+        return
+
+    state = prepared_state
 
     # ── Stream the LLM response tokens ────────────────────────────
     done: StreamDone | None = None
@@ -186,7 +204,7 @@ async def stream_pipeline(
 
     if done is None:
         done = StreamDone(
-            trace_log=trace_log,
+            trace_log="",
             response="",
             raw_response="",
             error="Stream ended without a StreamDone sentinel.",
