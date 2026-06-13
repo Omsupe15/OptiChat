@@ -808,7 +808,7 @@ def _build_final_prompt(state: PipelineState, answer_plan: list[str]) -> list[di
         "[ANSWER RULES]\n"
         "Answer directly after considering the visible action plan. Do not output XML trace tags. "
         "Do not expose hidden reasoning. If web sources are present, ground current claims in them "
-        "and cite URLs inline."
+        "and cite URLs inline. Do not write visible plan in final response"
     )
 
     user_block = (
