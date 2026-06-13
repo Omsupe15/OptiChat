@@ -144,9 +144,10 @@ def detect_ollama_models() -> list[dict[str, str]]:
     if Ollama is not running / not installed.
     """
     try:
-        import ollama
+        from ollama import Client
+        client = Client(host='http://127.0.0.1:11434')
 
-        response = ollama.list()
+        response = client.list()
         result: list[dict[str, str]] = []
         for m in response.models:
             model_name = m.model if hasattr(m, "model") else m.name

@@ -27,6 +27,7 @@ from db.database import (
     CHROMA_DIR,
     get_messages,
     load_config,
+    list_chats,
 )
 
 logger = logging.getLogger(__name__)
@@ -493,9 +494,12 @@ def update_personalized_memory_post_session(
     Scans all messages in the chat for preference signals.
     Called on session close (/quit or Ctrl+Q).
     """
-    all_messages = get_messages(chat_id)
-    simple_messages = [{"role": m["role"], "content": m["content"]} for m in all_messages]
-    return update_personalized_memory_from_messages(chat_id, simple_messages)
+    chats = list_chats()
+    if len(chats) % 3 == 0:
+        all_messages = get_messages(chat_id)
+        simple_messages = [{"role": m["role"], "content": m["content"]} for m in all_messages]
+        return update_personalized_memory_from_messages(chat_id, simple_messages)
+    return []
 
 
 # ══════════════════════════════════════════════
