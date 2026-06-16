@@ -6,6 +6,7 @@ langchain-core
 langchain-openai
 langchain-anthropic
 langchain-google-genai
+langgraph
 ollama
 chromadb
 sentence-transformers

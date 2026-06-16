@@ -240,7 +240,7 @@ class StreamingChatMessage(ChatMessage):
             )
             collapsible = Collapsible(
                 collapsible_md,
-                title="Chat Trace Logs",
+                title="Thinking.......",
                 collapsed=True,
                 classes="trace-collapsible",
                 id=f"trace-collapsible-{id(self)}",
