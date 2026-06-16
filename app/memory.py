@@ -258,6 +258,7 @@ def _get_chroma_collection():
     from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
     _embedding_function = SentenceTransformerEmbeddingFunction(
         model_name="all-MiniLM-L6-v2",
+        use_auth_token=False,
     )
 
     _chroma_collection = _chroma_client.get_or_create_collection(
