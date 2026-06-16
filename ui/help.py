@@ -102,20 +102,23 @@ class HelpSection(VerticalScroll):
                 "4. **Relevance Scoring** – drops chunks below a 0.4 threshold "
                 "and sorts the rest by score descending.\n"
                 "5. **Personalization** – injects tone, length, interests.\n"
-                "6. **Prompt Assembly** – combines all context into the final "
+                "6. **WebSearch** - If you have enabled websearch, Optichat will "
+                "search the web for relevant information and include it in the "
+                "response.\n"
+                "7. **Prompt Assembly** – combines all context into the final "
                 "prompt template with Chain-of-Thought and Adaptive Response "
                 "instructions.\n"
-                "7. **LLM Invocation** – sends the prompt, parses the trace.\n"
-                "8. **Post-processing** – stores in SQLite, updates short-term "
+                "8. **LLM Invocation** – sends the prompt, parses the trace.\n"
+                "9. **Post-processing** – stores in SQLite, updates short-term "
                 "memory, triggers LRU and long-term embedding in background."
             )
 
         # ── Chat Trace Logs ──────────────────
-        with Collapsible(title="Chat Trace Logs"):
+        with Collapsible(title="Thinking Logs"):
             yield Markdown(
-                "## Chat Trace Logs\n\n"
-                "Every assistant response includes a collapsible *Chat Trace Logs* "
-                "section at the bottom of the message bubble.\n\n"
+                "## Thinking Logs\n\n"
+                "Every assistant response includes a collapsible *Thinking Logs* "
+                "section shown when the response is being generated.\n\n"
                 "- Click the collapsible to inspect what the model planned "
                 "before generating its response.\n"
                 "- Useful for **debugging**, **understanding reasoning**, and "
@@ -171,7 +174,7 @@ class HelpSection(VerticalScroll):
             yield Markdown(
                 "**OptiChat** is an intelligent terminal-based AI chat client.\n\n"
                 "It features a multi-tier memory system, adaptive response, "
-                "chain-of-thought trace logs, structured output schemas, "
+                "chain-of-thought thinking logs, structured output schemas, "
                 "multi-provider model support (OpenAI, Anthropic, Gemini, Ollama), "
                 "and a beautiful Textual TUI.\n\n"
                 "Built with **Textual**, **LangChain**, and **LangGraph**."

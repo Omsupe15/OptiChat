@@ -1,5 +1,8 @@
 from ui.layout import OptiChatApp
 
-if __name__ == "__main__":
+def launch():
     app = OptiChatApp()
     app.run()
+
+if __name__ == "__main__":
+    launch()

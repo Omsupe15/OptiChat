@@ -10,4 +10,4 @@ langgraph
 ollama
 chromadb
 sentence-transformers
-ddgs
+duckduckgo-search

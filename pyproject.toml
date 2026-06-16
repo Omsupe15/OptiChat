@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optichat"
-version = "0.1.0"
+version = "0.1.1"
 description = "An advanced terminal-based chat application built with Python and Textual."
 readme = "Readme.md"
 requires-python = ">=3.9"
@@ -29,8 +29,11 @@ dependencies = [
     "ollama",
     "chromadb",
     "sentence-transformers",
-    "ddgs",
+    "duckduckgo-search",
 ]
+
+[project.scripts]
+optichat = "main:launch"
 
 [tool.setuptools]
 packages = ["app", "db", "ui"]

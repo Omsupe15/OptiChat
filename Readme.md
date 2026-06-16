@@ -1,6 +1,6 @@
 # OptiChat
 
-OptiChat is an advanced terminal-based chat application built with Python and Textual. It features a robust multi-tier memory system, personalized memory tracking, dynamic model connectivity (including cloud and local Ollama models), and a sophisticated prompt construction pipeline for high-quality, contextual AI responses.
+OptiChat is an advanced terminal-based chat application built with Python and Textual. It features a robust multi-tier memory system, personalized memory tracking, dynamic model connectivity, (including cloud and local Ollama models), web search support and a sophisticated prompt construction pipeline for high-quality, contextual AI responses.
 
 ## 🌟 Key Features
 
@@ -11,8 +11,10 @@ OptiChat is an advanced terminal-based chat application built with Python and Te
     *   **Long-Term Memory**: Persistent vector store (ChromaDB) for semantic search across conversations.
     *   **Personalized Memory**: Automatically learns and updates user preferences, interests, and interaction styles with conflict resolution.
 *   **Dynamic Model Connectivity**: Support for OpenAI, Anthropic, Gemini, and local models via Ollama.
+*   **Web Search Support**: Utilizes duckduckgo-search to fetch real-time information from the internet.
 *   **Prompt Construction Pipeline**: Utilizes LangGraph to dynamically classify queries, retrieve memory, apply personalization, and enforce structured output schemas.
-*   **Chat Trace Logs**: Every assistant response includes a collapsible section showing the model's chain-of-thought ToDo plan – what the model thought before responding.
+*   **Thinking Logs**: Every assistant response includes a collapsible section showing the model's chain-of-thought ToDo plan – what the model thought before responding.
+*   **Auto-Tool Calling**: The model can automatically call tools (web search, memory retrieval etc.) based on the query. To reduce latency it only calls the tools that are necessary and therefore short query it takes less time to respond, whereas for complex queries it will call the tools that are necessary and will take more time to respond.
 *   **Adaptive Response**: Response length and depth dynamically adapt to question complexity (simple → concise, complex → thorough and comprehensive).
 *   **Auto Chat Naming**: New chats are automatically renamed based on your first question (2-3 word title) via a background thread.
 *   **Secure Local Storage**: All data, including settings, API keys (via `.env`), SQLite databases for chats, and ChromaDB vectors, are stored securely in your local `~/.optichat/` directory.
@@ -39,12 +41,14 @@ Using LangChain and LangGraph, the pipeline:
 3.  Scores and orders the context.
 4.  Injects personalized memory (tone, length, interests).
 5.  Selects an appropriate output schema (e.g., factual, procedural, coding).
-6.  Instructs the model to produce a **chain-of-thought ToDo plan** (`<TRACE>…</TRACE>`) before answering.
-7.  Applies **adaptive response** instructions based on detected question complexity.
-8.  Streams the final response and parses the trace log for display.
+6.  Checks if web search is needed.
+7.  If web search is needed, it will search the web and add the results to the context.
+8.  Instructs the model to produce a **chain-of-thought ToDo plan** (`<TRACE>…</TRACE>`) before answering and streams the thinking logs.
+9.  Applies **adaptive response** instructions based on detected question complexity.
+10. Streams the final response.
 
 ### Chat Trace Logs
-Every assistant response includes a collapsible **Chat Trace Logs** widget at the bottom of the message bubble. This displays the numbered ToDo plan (chain-of-thought) that the model produced before generating its answer. Click to expand and inspect the model's reasoning process — useful for debugging, understanding responses, and evaluating quality.
+Every assistant response includes a collapsible **Thinking Logs** widget before the response starts streaming. This displays the numbered ToDo plan (chain-of-thought) that the model produced before generating its answer. Click to expand and inspect the model's reasoning process.
 
 ### Adaptive Response
 Response length automatically adapts to question complexity:
@@ -61,35 +65,24 @@ New chats start with a generic "Chat N" name. After the first AI response, a bac
 
 ## 🛠️ Setup & Installation
 
-1. **Clone the repository:**
+1. **Use pip to install the package**
    ```bash
-   git clone <repository_url>
-   cd OptiChat
+   pip install optichat
    ```
+   *Note: Since this package has large dependencies, it will take some time to install.*
+   *Note: Installing this package will create the `~/.optichat/` directory and necessary files upon first launch.*
 
-2. **Create a virtual environment (optional but recommended):**
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   optichat
    ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run OptiChat:**
-   ```bash
-   python main.py # runs in terminal 
-   textual run --dev main.py # runs in textual UI (Slower startup)
-   ```
-   *Note: OptiChat will automatically create the `~/.optichat/` directory and necessary files upon first launch.*
-
+   Use the above command to launch the application in the terminal.
+   
 5. **Configure AI Models:**
    - Launch the application and navigate to the **Settings** tab.
    - Enter your API keys for Cloud Providers (OpenAI, Anthropic, Gemini).
    - Alternatively, ensure [Ollama](https://ollama.com/) is running locally to auto-detect and use local models.
    - **DISCLAIMER: API models consume a lot of tokens for chats as multiple calls are used for a single response, use local models for longer conversations**
+   
 
 ## ⌨️ Keyboard Shortcuts
 
@@ -101,14 +94,14 @@ New chats start with a generic "Chat N" name. After the first AI response, a bac
 | `↑ / ↓` | Scroll through input history (previous commands/messages) |
 | `Page Up / Page Down` | Scroll the main panel content |
 
-## 🚀 Development Roadmap
+## Disclaimer
 
-OptiChat is developed in structured phases:
+- If you are using a local model make sure that ollama is running and models are downloaded.
+- The first time you interact with any model it will take 3-5 minutes to load one of the libraries. This will not happen only the first time.
+- When you use a local model for the first time in any session it will take 30 seconds to load the model inside the VRAM. This will not happen again in the same session.
+- Make sure you have enough VRAM to run local models. (atleast 4-6GB VRAM is recommended for smaller models like gemma3:4B, tinyllama:1.1b)
 
-*   **Phase 1: UI Design via Textual** - Building the responsive terminal interface, navigation, settings panels for API keys and themes, and chat windows.
-*   **Phase 2: Core Backend & Model Connectivity** - Initializing the `~/.optichat/` environment, implementing SQLite for chat history, and connecting to Cloud/Local AI models using LangChain.
-*   **Phase 3: Memory Storing Mechanism** - Implementing the background threads for Short-Term, LRU, and Long-Term (ChromaDB) memory handling, along with personalized memory updates.
-*   **Phase 4: Prompt Construction Pipeline** - Orchestrating the advanced LangGraph pipeline for query classification, semantic retrieval, schema enforcement, chain-of-thought trace logs, adaptive response, auto chat naming, and intelligent prompt assembly.
-
+**I have only tested on Windows so i am not sure how it will work on other OS**
+**I am still learning and improving, so please help me with finding bugs and suggest improvements. I would really appreciate it!**  
 ---
 *Developed using Textual, LangChain, and LangGraph.*

@@ -50,7 +50,7 @@ DEFAULT_PERSONALIZED_MEMORY: dict[str, Any] = {
         "examples_preferred": True,
         "language": "English",
     },
-    "interests": ["computer science", "cybersecurity", "philosophy"],
+    "interests": [],
     "dislikes": ["excessive bullet points", "vague answers"],
     "name": "User",
     "conflict_log": [],
