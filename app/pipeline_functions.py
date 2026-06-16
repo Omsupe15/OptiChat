@@ -446,6 +446,8 @@ async def orchestrator_agent(state: PipelineState) -> PipelineState:
         result.get("personalization_summary", fallback["personalization_summary"])
     )
     rel_prefs = result.get("relevant_preferences", fallback["relevant_preferences"])
+    if not isinstance(rel_prefs, dict):
+        rel_prefs = fallback["relevant_preferences"]
     if isinstance(personalized, dict):
         personalized = {**personalized, "relevant_preferences": rel_prefs}
 
@@ -754,7 +756,11 @@ async def prompt_assembly_agent(state: PipelineState) -> PipelineState:
 def _build_final_prompt(state: PipelineState, answer_plan: list[str]) -> list[dict[str, str]]:
     personalized = state.get("personalized", {})
     prefs = personalized.get("preferences", {}) if isinstance(personalized, dict) else {}
+    if not isinstance(prefs, dict):
+        prefs = {}
     relevant_prefs = personalized.get("relevant_preferences", {}) if isinstance(personalized, dict) else {}
+    if not isinstance(relevant_prefs, dict):
+        relevant_prefs = {}
     name = personalized.get("name", "User") if isinstance(personalized, dict) else "User"
     tone = relevant_prefs.get("tone") or prefs.get("tone", "neutral")
     response_length = relevant_prefs.get("response_length") or prefs.get("response_length", "standard")

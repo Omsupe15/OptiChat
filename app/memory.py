@@ -405,7 +405,9 @@ def load_personalized_memory() -> dict[str, Any]:
     """Load the personalized memory JSON from disk."""
     if MEMORY_PATH.exists():
         try:
-            return json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+            loaded = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return loaded
         except (json.JSONDecodeError, OSError):
             pass
     from db.database import DEFAULT_PERSONALIZED_MEMORY
