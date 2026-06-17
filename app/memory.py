@@ -20,6 +20,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import os
 
 from db.database import (
     CHATS_DIR,
@@ -237,6 +238,9 @@ def _tokenize_for_freq(text: str) -> list[str]:
 _chroma_client = None
 _chroma_collection = None
 _embedding_function = None
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 
 def _get_chroma_collection():
