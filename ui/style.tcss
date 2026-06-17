@@ -216,6 +216,16 @@ ChatWindow {
     min-width: 12;
 }
 
+#btn-pause {
+    width: auto;
+    min-width: 10;
+}
+
+#btn-retry {
+    width: auto;
+    min-width: 10;
+}
+
 /* ── Message Bubbles ────────────────────────── */
 ChatMessage {
     margin: 0 0 1 0;

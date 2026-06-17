@@ -348,6 +348,8 @@ class ChatWindow(Vertical):
                 id="chat-input",
             )
             yield Button("Send ➤", id="btn-send", variant="primary")
+            yield Button("⏸ Pause", id="btn-pause", variant="warning", disabled=True)
+            yield Button("🔄 Retry", id="btn-retry", variant="default", disabled=True)
 
     def on_mount(self) -> None:
         self.query_one("#chat-loading", LoadingIndicator).display = False
@@ -372,6 +374,20 @@ class ChatWindow(Vertical):
 
     def show_loading(self, show: bool = True) -> None:
         self.query_one("#chat-loading", LoadingIndicator).display = show
+
+    def set_pause_enabled(self, enabled: bool) -> None:
+        """Enable or disable the pause button."""
+        try:
+            self.query_one("#btn-pause", Button).disabled = not enabled
+        except Exception:
+            pass
+
+    def set_retry_enabled(self, enabled: bool) -> None:
+        """Enable or disable the retry button."""
+        try:
+            self.query_one("#btn-retry", Button).disabled = not enabled
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────

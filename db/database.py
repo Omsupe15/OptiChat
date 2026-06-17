@@ -419,6 +419,30 @@ def get_messages(chat_id: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def delete_last_message(chat_id: str, role: str) -> dict[str, Any] | None:
+    """Delete the most recent message of the given *role* from a chat.
+
+    Returns the deleted message as a dict, or ``None`` if no matching
+    message was found.  Also decrements the chat's ``message_count``.
+    """
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE chat_id = ? AND role = ? "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (chat_id, role),
+        ).fetchone()
+        if row:
+            msg = dict(row)
+            conn.execute("DELETE FROM messages WHERE id = ?", (msg["id"],))
+            conn.execute(
+                "UPDATE chats SET message_count = MAX(message_count - 1, 0), "
+                "updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), chat_id),
+            )
+            return msg
+    return None
+
+
 # ══════════════════════════════════════════════
 #  Session CRUD
 # ══════════════════════════════════════════════

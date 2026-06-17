@@ -964,6 +964,22 @@ async def post_process_agent(state: PipelineState) -> PipelineState:
         logger.exception("Memory processing failed during post-process")
         state = _append_error(state, f"post_process_agent memory: {exc}")
 
+    # Periodic personalized memory update (every 3 assistant responses)
+    try:
+        confirmations = await asyncio.to_thread(
+            mem.maybe_update_personalized_memory, chat_id,
+        )
+        if confirmations:
+            state = _append_log(
+                state,
+                "post_process_agent",
+                "personalized_memory_updated",
+                {"confirmations": confirmations},
+            )
+    except Exception as exc:
+        logger.exception("Personalized memory periodic update failed")
+        state = _append_error(state, f"post_process_agent personalized_memory: {exc}")
+
     return _append_log(
         state,
         "post_process_agent",
@@ -1166,3 +1182,42 @@ invoke_model = response_agent
 post_process = post_process_agent
 generate_cot_plan = websearch_agent
 second_web_search = websearch_agent
+
+
+# ══════════════════════════════════════════════
+#  Ollama model preloading / unloading
+# ══════════════════════════════════════════════
+async def preload_ollama_model(model_name: str) -> bool:
+    """Send an empty prompt to Ollama to load the model into VRAM.
+
+    Uses ``keep_alive=-1`` which tells Ollama to keep the model loaded
+    indefinitely until explicitly unloaded or until Ollama is stopped.
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={"model": model_name, "prompt": "", "keep_alive": -1},
+            )
+            return resp.status_code == 200
+    except Exception:
+        logger.exception("Failed to preload Ollama model %s", model_name)
+        return False
+
+
+async def unload_ollama_model(model_name: str) -> bool:
+    """Unload a model from VRAM by setting ``keep_alive`` to 0."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={"model": model_name, "prompt": "", "keep_alive": 0},
+            )
+            return resp.status_code == 200
+    except Exception:
+        logger.exception("Failed to unload Ollama model %s", model_name)
+        return False

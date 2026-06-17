@@ -41,7 +41,7 @@ from textual.widgets import (
 import app.connect_models as cm
 from app.connect_models import send_message, send_message_via_pipeline, stream_message
 from app.pipeline import stream_pipeline, TraceLogChunk
-from app.pipeline_functions import StreamDone
+from app.pipeline_functions import StreamDone, preload_ollama_model, unload_ollama_model
 import app.memory as mem
 import db.database as db
 import ui.help as help
@@ -87,6 +87,11 @@ class OptiChatApp(App):
     streaming_enabled: reactive[bool] = reactive(True)
     websearch_enabled: reactive[bool] = reactive(False)  # Phase 5: web search toggle
     active_chat_id: str | None = None
+
+    # Changes 3: pause / retry / ollama preloading state
+    _stop_streaming: bool = False
+    _last_user_query: str | None = None
+    _loaded_ollama_model: str | None = None
 
     # ── Compose ──────────────────────────────
     def compose(self) -> ComposeResult:
@@ -143,6 +148,10 @@ class OptiChatApp(App):
         self._apply_config()
         self._refresh_providers_and_models()
         self._load_sidebar_chats()
+
+        # Changes 3: Preload default Ollama model into VRAM
+        if default_model and default_model.startswith("ollama/"):
+            self._preload_ollama(default_model)
 
         # Show splash, then hide after 3 seconds
         self._dismiss_splash()
@@ -208,8 +217,10 @@ class OptiChatApp(App):
         self.notify(f"Streaming {state}", title="Streaming")
 
     def action_cancel_response(self) -> None:
+        self._stop_streaming = True
         chat_window = self.query_one("#chat-window", ChatWindow)
         chat_window.show_loading(False)
+        chat_window.set_pause_enabled(False)
         self.notify("Response cancelled", severity="warning")
 
     @work
@@ -220,6 +231,12 @@ class OptiChatApp(App):
                 confirmations = await mem.on_session_close(self.active_chat_id)
                 for c in confirmations:
                     self.notify(c, title="Memory")
+            except Exception:
+                pass
+        # Unload any preloaded Ollama model
+        if self._loaded_ollama_model:
+            try:
+                await unload_ollama_model(self._loaded_ollama_model)
             except Exception:
                 pass
         self.exit()
@@ -296,7 +313,52 @@ class OptiChatApp(App):
     @on(Select.Changed, "#chat-model-select")
     def _on_chat_model_change(self, event: Select.Changed) -> None:
         if self.active_chat_id and event.value and event.value != Select.BLANK:
-            db.update_chat_model(self.active_chat_id, str(event.value))
+            new_model = str(event.value)
+            db.update_chat_model(self.active_chat_id, new_model)
+            # Changes 3: preload/unload ollama model on switch
+            if new_model.startswith("ollama/"):
+                self._preload_ollama(new_model)
+            elif self._loaded_ollama_model:
+                self._unload_current_ollama()
+
+    # ── Pause / Retry handlers (Changes 3) ────
+    @on(Button.Pressed, "#btn-pause")
+    def _on_pause_click(self) -> None:
+        """Stop the current response generation."""
+        self._stop_streaming = True
+        chat_window = self.query_one("#chat-window", ChatWindow)
+        chat_window.set_pause_enabled(False)
+        self.notify("Stopping response...", severity="warning")
+
+    @on(Button.Pressed, "#btn-retry")
+    def _on_retry_click(self) -> None:
+        """Delete last assistant response and re-send the same user query."""
+        if not self.active_chat_id or not self._last_user_query:
+            self.notify("Nothing to retry.", severity="warning")
+            return
+
+        chat_id = self.active_chat_id
+        chat_data = db.get_chat_by_id(chat_id)
+        chat_name = (chat_data or {}).get("name", "unknown")
+
+        # Delete last assistant response from SQLite DB
+        db.delete_last_message(chat_id, "assistant")
+
+        # Delete last assistant response from short-term memory
+        mem.remove_last_from_short_term(chat_name, "assistant")
+
+        # Remove the last message widget from the chat UI
+        container = self.query_one("#chat-messages", VerticalScroll)
+        children = list(container.children)
+        if children:
+            children[-1].remove()
+
+        # Disable retry during regeneration and re-send
+        chat_window = self.query_one("#chat-window", ChatWindow)
+        chat_window.set_retry_enabled(False)
+        self._stop_streaming = False
+        chat_window.show_loading(True)
+        self._get_ai_response(chat_id, self._last_user_query)
 
     # ── Sending messages ─────────────────────
     @on(Button.Pressed, "#btn-send")
@@ -316,6 +378,11 @@ class OptiChatApp(App):
         chat_window = self.query_one("#chat-window", ChatWindow)
         chat_window.add_message("user", text)
         inp.value = ""
+
+        # Changes 3: track last query for retry, reset stop flag
+        self._last_user_query = text
+        self._stop_streaming = False
+        chat_window.set_retry_enabled(False)
 
         chat_window.show_loading(True)
         self._get_ai_response(self.active_chat_id, text)
@@ -337,22 +404,24 @@ class OptiChatApp(App):
         model_id = (chat_data or {}).get("model_id") or db.get_default_model()
         chat_name = (chat_data or {}).get("name", "unknown")
 
+        chat_window = self.query_one("#chat-window", ChatWindow)
+
         if not model_id:
             reply = "*No model selected.* Please choose a model from the dropdown or set a default in Settings."
             db.add_message(chat_id, "assistant", reply)
             if self.active_chat_id == chat_id:
-                cw = self.query_one("#chat-window", ChatWindow)
-                cw.show_loading(False)
-                cw.add_message("assistant", reply)
+                chat_window.show_loading(False)
+                chat_window.add_message("assistant", reply)
             return
 
         trace_log = ""
         reply = ""
+        stopped_by_user = False
 
         if self.streaming_enabled:
             # ── Streaming path ────────────────────────────────────
-            chat_window = self.query_one("#chat-window", ChatWindow)
             chat_window.show_loading(False)  # hide spinner; streaming is live
+            chat_window.set_pause_enabled(True)  # Changes 3: activate pause
 
             # Mount a live streaming bubble
             container = self.query_one("#chat-messages", VerticalScroll)
@@ -369,6 +438,17 @@ class OptiChatApp(App):
                     model_id=model_id,
                     websearch_enabled=self.websearch_enabled,
                 ):
+                    # Changes 3: check pause flag
+                    if self._stop_streaming:
+                        stopped_by_user = True
+                        reply = stream_bubble._accumulated or ""
+                        if not response_started:
+                            stream_bubble.start_response()
+                        stream_bubble.append_token("\n\n*Response stopped by user.*")
+                        await stream_bubble.finish_streaming()
+                        container.scroll_end(animate=False)
+                        break
+
                     if isinstance(item, TraceLogChunk):
                         # Stream trace-log lines ABOVE the response
                         await stream_bubble.append_trace(item.text)
@@ -394,6 +474,15 @@ class OptiChatApp(App):
                 await stream_bubble.finish_streaming()
                 db.add_message(chat_id, "user", user_text)
                 db.add_message(chat_id, "assistant", reply)
+
+            # Changes 3: disable pause after streaming ends
+            chat_window.set_pause_enabled(False)
+
+            # If stopped by user, save partial response to DB
+            if stopped_by_user and reply:
+                partial = reply + "\n\n*Response stopped by user.*"
+                db.add_message(chat_id, "user", user_text)
+                db.add_message(chat_id, "assistant", partial)
         else:
             # ── Non-streaming (pipeline) path ─────────────────────────
             try:
@@ -412,7 +501,6 @@ class OptiChatApp(App):
                 db.add_message(chat_id, "assistant", reply)
 
             if self.active_chat_id == chat_id:
-                chat_window = self.query_one("#chat-window", ChatWindow)
                 chat_window.show_loading(False)
                 chat_window.add_message("assistant", reply, trace_log=trace_log)
 
@@ -421,6 +509,9 @@ class OptiChatApp(App):
         footer.tokens_used += mem.estimate_tokens(user_text) + mem.estimate_tokens(reply)
         footer.model_name = model_id
         footer.model_status = "Active"
+
+        # Changes 3: enable retry after response completes
+        chat_window.set_retry_enabled(True)
 
         # ── Auto-rename chat ───────────────────────────────────────
         current_name = (db.get_chat_by_id(chat_id) or {}).get("name", "")
@@ -439,6 +530,32 @@ class OptiChatApp(App):
                     cw = self.query_one("#chat-window", ChatWindow)
                     cw.chat_name = new_name
             _update_ui()
+
+    # ── Ollama preloading (Changes 3) ────────
+    @work
+    async def _preload_ollama(self, model_id: str) -> None:
+        """Preload an Ollama model into VRAM with keep_alive=-1."""
+        model_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+
+        # Unload previous model if different
+        if self._loaded_ollama_model and self._loaded_ollama_model != model_name:
+            await unload_ollama_model(self._loaded_ollama_model)
+
+        success = await preload_ollama_model(model_name)
+        if success:
+            self._loaded_ollama_model = model_name
+            self.notify(f"Model {model_name} loaded into VRAM", title="Ollama")
+        else:
+            self.notify(f"Failed to preload {model_name}", severity="warning")
+
+    @work
+    async def _unload_current_ollama(self) -> None:
+        """Unload the currently loaded Ollama model from VRAM."""
+        if self._loaded_ollama_model:
+            model_name = self._loaded_ollama_model
+            await unload_ollama_model(model_name)
+            self._loaded_ollama_model = None
+            self.notify(f"Model {model_name} unloaded from VRAM", title="Ollama")
 
     # ── Settings handlers ────────────────────
     @on(Button.Pressed, "#btn-save-api-key")
@@ -490,8 +607,14 @@ class OptiChatApp(App):
     @on(Select.Changed, "#default-model-select")
     def _on_default_model_change(self, event: Select.Changed) -> None:
         if event.value and event.value != Select.BLANK:
-            db.set_default_model(str(event.value))
+            new_model = str(event.value)
+            db.set_default_model(new_model)
             self.notify(f"Default model set to {event.value}", title="Settings")
+            # Changes 3: preload/unload ollama model on default change
+            if new_model.startswith("ollama/"):
+                self._preload_ollama(new_model)
+            elif self._loaded_ollama_model:
+                self._unload_current_ollama()
 
     @on(Select.Changed, "#theme-select")
     def _on_theme_change(self, event: Select.Changed) -> None:

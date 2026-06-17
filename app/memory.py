@@ -156,6 +156,25 @@ def add_to_short_term(
     return dropped
 
 
+def remove_last_from_short_term(
+    chat_name: str,
+    role: str,
+) -> dict[str, Any] | None:
+    """Remove the last message of the given *role* from short-term memory.
+
+    Returns the removed message dict, or ``None`` if no matching message
+    was found.  Used by the retry button to undo the last assistant
+    response before re-generating.
+    """
+    st = load_short_term(chat_name)
+    for i in range(len(st) - 1, -1, -1):
+        if st[i].get("role") == role:
+            removed = st.pop(i)
+            save_short_term(chat_name, st)
+            return removed
+    return None
+
+
 # ══════════════════════════════════════════════
 #  LRU CACHED MEMORY
 # ══════════════════════════════════════════════
@@ -493,20 +512,39 @@ def update_personalized_memory_from_messages(
     return confirmations
 
 
+def maybe_update_personalized_memory(
+    chat_id: str,
+) -> list[str]:
+    """Check if we've hit a 3-response boundary; if so, update personalized memory.
+
+    Called after every assistant response by ``post_process_agent``.  Only
+    triggers the full preference scan when the total assistant message count
+    in this chat is a multiple of 3.
+    """
+    all_messages = get_messages(chat_id)
+    assistant_count = sum(1 for m in all_messages if m["role"] == "assistant")
+
+    if assistant_count > 0 and assistant_count % 3 == 0:
+        simple_messages = [
+            {"role": m["role"], "content": m["content"]} for m in all_messages
+        ]
+        return update_personalized_memory_from_messages(chat_id, simple_messages)
+    return []
+
+
 def update_personalized_memory_post_session(
     chat_id: str,
 ) -> list[str]:
     """Run a lightweight end-of-session analysis to update personalized memory.
 
     Scans all messages in the chat for preference signals.
-    Called on session close (/quit or Ctrl+Q).
+    Called on session close (/quit or Ctrl+Q) as a safety-net fallback.
     """
-    chats = list_chats()
-    if len(chats) % 3 == 0:
-        all_messages = get_messages(chat_id)
-        simple_messages = [{"role": m["role"], "content": m["content"]} for m in all_messages]
-        return update_personalized_memory_from_messages(chat_id, simple_messages)
-    return []
+    all_messages = get_messages(chat_id)
+    simple_messages = [
+        {"role": m["role"], "content": m["content"]} for m in all_messages
+    ]
+    return update_personalized_memory_from_messages(chat_id, simple_messages)
 
 
 # ══════════════════════════════════════════════
