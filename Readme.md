@@ -40,11 +40,6 @@ The cloud pipeline is optimized for speed and API cost efficiency, running the e
 
 ```mermaid
 flowchart TD
-    classDef llm fill:#85C1E9,stroke:#2E86C1,stroke-width:2px,color:#1B4F72;
-    classDef prog fill:#82E0AA,stroke:#229954,stroke-width:2px,color:#0B5345;
-    classDef startEnd fill:#F8C471,stroke:#D35400,stroke-width:2px,color:#6E2C00;
-    classDef storage fill:#BB8FCE,stroke:#7D3C98,stroke-width:2px,color:#4A235A;
-
     Input([User Input]) --> Orchestrator[Cloud Orchestrator Agent <br/><b>(LLM Call 1)</b>]
     
     subgraph cloud_orch [1. Joint Orchestration & Plan Assembly]
@@ -77,11 +72,6 @@ flowchart TD
         PostProcess --> CacheWrite[Update Short-Term & LRU Caches]
         PostProcess --> PeriodicUpdate[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>]
     end
-
-    class Input,Stream startEnd;
-    class Orchestrator,LLMGen,PostProcess llm;
-    class Classify,Personalize,GenPlan,MemorySearch,ShortTerm,LRU,LongTerm,Merge,Filter,Assembly,CacheWrite,PeriodicUpdate prog;
-    class DBWrite storage;
 ```
 
 ### Key Stages in Cloud Pipeline:
@@ -98,11 +88,6 @@ The local pipeline runs using LangGraph, executing specialized, single-purpose a
 
 ```mermaid
 flowchart TD
-    classDef llm fill:#85C1E9,stroke:#2E86C1,stroke-width:2px,color:#1B4F72;
-    classDef prog fill:#82E0AA,stroke:#229954,stroke-width:2px,color:#0B5345;
-    classDef startEnd fill:#F8C471,stroke:#D35400,stroke-width:2px,color:#6E2C00;
-    classDef storage fill:#BB8FCE,stroke:#7D3C98,stroke-width:2px,color:#4A235A;
-
     Input([User Input]) --> Classifier[Classifier / Orchestrator Agent <br/><b>(LLM Call 1)</b>]
     
     subgraph orch [1. Classification & Routing]
@@ -144,11 +129,6 @@ flowchart TD
         PostProcess --> CacheWriteLocal[Update Short-Term & LRU Caches]
         PostProcess --> PeriodicUpdateLocal[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>]
     end
-
-    class Input,Stream startEnd;
-    class Classifier,MemAgent,WebSearch,QueryPlanner,SourceRanker,PromptAssembly,LLMGen,PostProcess llm;
-    class Classify,RouteDecision,VectorRetrieve,LLMFilter,DDGSearch,SecondSearch,PlanGen,BuildPrompt,CacheWriteLocal,PeriodicUpdateLocal prog;
-    class DBWriteLocal storage;
 ```
 
 ### Key Stages in Local Pipeline:
