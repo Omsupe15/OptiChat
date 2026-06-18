@@ -45,38 +45,43 @@ flowchart TD
     classDef startEnd fill:#F8C471,stroke:#D35400,stroke-width:2px,color:#6E2C00;
     classDef storage fill:#BB8FCE,stroke:#7D3C98,stroke-width:2px,color:#4A235A;
 
-    Input([User Input]) :::startEnd --> Orchestrator[Cloud Orchestrator Agent <br/><b>(LLM Call 1)</b>] :::llm
+    Input([User Input]) --> Orchestrator[Cloud Orchestrator Agent <br/><b>(LLM Call 1)</b>]
     
     subgraph cloud_orch [1. Joint Orchestration & Plan Assembly]
-        Orchestrator --> Classify[Determine Complexity & Schema] :::prog
-        Orchestrator --> Personalize[Analyze Personalization Preferences] :::prog
-        Orchestrator --> GenPlan[Generate Answer Action Plan] :::prog
+        Orchestrator --> Classify[Determine Complexity & Schema]
+        Orchestrator --> Personalize[Analyze Personalization Preferences]
+        Orchestrator --> GenPlan[Generate Answer Action Plan]
     end
 
-    Classify & Personalize & GenPlan --> MemorySearch[Programmatic Memory Search <br/><b>(No LLM)</b>] :::prog
+    Classify & Personalize & GenPlan --> MemorySearch[Programmatic Memory Search <br/><b>(No LLM)</b>]
 
     subgraph memory_retrieval [Programmatic Memory Search Flow]
-        MemorySearch --> ShortTerm[Lexical Match: Short-Term Memory] :::prog
-        MemorySearch --> LRU[Lexical Match: LRU Cache] :::prog
-        MemorySearch --> LongTerm[Semantic Match: ChromaDB Vector Store] :::prog
+        MemorySearch --> ShortTerm[Lexical Match: Short-Term Memory]
+        MemorySearch --> LRU[Lexical Match: LRU Cache]
+        MemorySearch --> LongTerm[Semantic Match: ChromaDB Vector Store]
         
-        ShortTerm & LRU & LongTerm --> Merge[Merge, Deduplicate & Score Chunks] :::prog
-        Merge --> Filter[Filter by Threshold >= 0.40] :::prog
+        ShortTerm & LRU & LongTerm --> Merge[Merge, Deduplicate & Score Chunks]
+        Merge --> Filter[Filter by Threshold >= 0.40]
     end
 
-    Filter --> Assembly[Deterministic Prompt Assembly <br/><i>Appends Retrieved Context to Prompt/Plan</i>] :::prog
+    Filter --> Assembly[Deterministic Prompt Assembly <br/><i>Appends Retrieved Context to Prompt/Plan</i>]
     
-    Assembly --> LLMGen[Response Generation <br/><b>(LLM Call 2)</b>] :::llm
+    Assembly --> LLMGen[Response Generation <br/><b>(LLM Call 2)</b>]
     
-    LLMGen --> Stream([Stream/Output Response]) :::startEnd
+    LLMGen --> Stream([Stream/Output Response])
     
-    Stream --> PostProcess[Post-Process Agent <br/><b>(LLM Call 3)</b>] :::llm
+    Stream --> PostProcess[Post-Process Agent <br/><b>(LLM Call 3)</b>]
     
     subgraph post_run [Post-Processing & Local Storage Writes]
-        PostProcess --> DBWrite[(Save Messages to SQLite)] :::storage
-        PostProcess --> CacheWrite[Update Short-Term & LRU Caches] :::prog
-        PostProcess --> PeriodicUpdate[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>] :::prog
+        PostProcess --> DBWrite[(Save Messages to SQLite)]
+        PostProcess --> CacheWrite[Update Short-Term & LRU Caches]
+        PostProcess --> PeriodicUpdate[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>]
     end
+
+    class Input,Stream startEnd;
+    class Orchestrator,LLMGen,PostProcess llm;
+    class Classify,Personalize,GenPlan,MemorySearch,ShortTerm,LRU,LongTerm,Merge,Filter,Assembly,CacheWrite,PeriodicUpdate prog;
+    class DBWrite storage;
 ```
 
 ### Key Stages in Cloud Pipeline:
@@ -98,47 +103,52 @@ flowchart TD
     classDef startEnd fill:#F8C471,stroke:#D35400,stroke-width:2px,color:#6E2C00;
     classDef storage fill:#BB8FCE,stroke:#7D3C98,stroke-width:2px,color:#4A235A;
 
-    Input([User Input]) :::startEnd --> Classifier[Classifier / Orchestrator Agent <br/><b>(LLM Call 1)</b>] :::llm
+    Input([User Input]) --> Classifier[Classifier / Orchestrator Agent <br/><b>(LLM Call 1)</b>]
     
     subgraph orch [1. Classification & Routing]
-        Classifier --> Classify[Classify Complexity, Schema & Depth] :::prog
-        Classifier --> RouteDecision{Decide Routing} :::prog
+        Classifier --> Classify[Classify Complexity, Schema & Depth]
+        Classifier --> RouteDecision{Decide Routing}
     end
 
-    RouteDecision -->|needs_memory = True| MemAgent[Memory Agent <br/><b>(LLM Call 2)</b>] :::llm
-    RouteDecision -->|needs_websearch = True| WebSearch[Websearch Agent <br/><b>(LLM Calls 3 & 4)</b>] :::llm
-    RouteDecision -->|Neither / Done| PromptAssembly[Prompt Assembly Agent <br/><b>(LLM Call 5)</b>] :::llm
+    RouteDecision -->|needs_memory = True| MemAgent[Memory Agent <br/><b>(LLM Call 2)</b>]
+    RouteDecision -->|needs_websearch = True| WebSearch[Websearch Agent <br/><b>(LLM Calls 3 & 4)</b>]
+    RouteDecision -->|Neither / Done| PromptAssembly[Prompt Assembly Agent <br/><b>(LLM Call 5)</b>]
 
     subgraph memory_flow [Memory Selection Node]
-        MemAgent --> VectorRetrieve[Retrieve chunks from ChromaDB] :::prog
-        VectorRetrieve --> LLMFilter[LLM selects & ranks relevant chunks] :::prog
+        MemAgent --> VectorRetrieve[Retrieve chunks from ChromaDB]
+        VectorRetrieve --> LLMFilter[LLM selects & ranks relevant chunks]
     end
 
     subgraph web_flow [Web Search Node]
-        WebSearch --> QueryPlanner[Query Planner <br/><b>(LLM Call 3)</b>] :::llm
-        QueryPlanner --> DDGSearch[Run DuckDuckGo Searches] :::prog
-        DDGSearch --> SourceRanker[Source Ranker & Summary <br/><b>(LLM Call 4)</b>] :::llm
-        SourceRanker -->|If missing facts| SecondSearch[Second-Pass DDG Search] :::prog
+        WebSearch --> QueryPlanner[Query Planner <br/><b>(LLM Call 3)</b>]
+        QueryPlanner --> DDGSearch[Run DuckDuckGo Searches]
+        DDGSearch --> SourceRanker[Source Ranker & Summary <br/><b>(LLM Call 4)</b>]
+        SourceRanker -->|If missing facts| SecondSearch[Second-Pass DDG Search]
     end
 
     LLMFilter & SourceRanker & SecondSearch --> PromptAssembly
 
     subgraph prompt_assembly [Prompt Assembly Node]
-        PromptAssembly --> PlanGen[Generate Visible Action Plan] :::prog
-        PlanGen --> BuildPrompt[Deterministically Build Final Prompt] :::prog
+        PromptAssembly --> PlanGen[Generate Visible Action Plan]
+        PlanGen --> BuildPrompt[Deterministically Build Final Prompt]
     end
 
-    BuildPrompt --> LLMGen[Response Generation <br/><b>(LLM Call 6)</b>] :::llm
+    BuildPrompt --> LLMGen[Response Generation <br/><b>(LLM Call 6)</b>]
     
-    LLMGen --> Stream([Stream/Output Response]) :::startEnd
+    LLMGen --> Stream([Stream/Output Response])
     
-    Stream --> PostProcess[Post-Process Agent <br/><b>(LLM Call 7)</b>] :::llm
+    Stream --> PostProcess[Post-Process Agent <br/><b>(LLM Call 7)</b>]
     
     subgraph post_run_local [Post-Processing Writes]
-        PostProcess --> DBWriteLocal[(Save Messages to SQLite)] :::storage
-        PostProcess --> CacheWriteLocal[Update Short-Term & LRU Caches] :::prog
-        PostProcess --> PeriodicUpdateLocal[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>] :::prog
+        PostProcess --> DBWriteLocal[(Save Messages to SQLite)]
+        PostProcess --> CacheWriteLocal[Update Short-Term & LRU Caches]
+        PostProcess --> PeriodicUpdateLocal[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>]
     end
+
+    class Input,Stream startEnd;
+    class Classifier,MemAgent,WebSearch,QueryPlanner,SourceRanker,PromptAssembly,LLMGen,PostProcess llm;
+    class Classify,RouteDecision,VectorRetrieve,LLMFilter,DDGSearch,SecondSearch,PlanGen,BuildPrompt,CacheWriteLocal,PeriodicUpdateLocal prog;
+    class DBWriteLocal storage;
 ```
 
 ### Key Stages in Local Pipeline:
