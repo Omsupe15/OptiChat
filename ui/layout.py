@@ -276,12 +276,20 @@ class OptiChatApp(App):
 
         # Update specific model dropdown for this chat
         chat_data = db.get_chat_by_id(chat_id)
+        model_id = None
         if chat_data and chat_data.get("model_id"):
+            model_id = chat_data["model_id"]
             model_select = self.query_one("#chat-model-select", Select)
             try:
-                model_select.value = chat_data["model_id"]
+                model_select.value = model_id
             except Exception:
                 pass # Dropdown might not have this model currently
+
+        # Disable websearch if it is a cloud model
+        is_cloud = model_id and model_id.split("/", 1)[0] in ("openai", "anthropic", "gemini")
+        chat_window.set_websearch_disabled(bool(is_cloud))
+        if is_cloud:
+            self.websearch_enabled = False
 
         # Load messages
         messages = db.get_messages(chat_id)
@@ -315,6 +323,14 @@ class OptiChatApp(App):
         if self.active_chat_id and event.value and event.value != Select.BLANK:
             new_model = str(event.value)
             db.update_chat_model(self.active_chat_id, new_model)
+            
+            # Disable websearch if it is a cloud model
+            is_cloud = new_model.split("/", 1)[0] in ("openai", "anthropic", "gemini")
+            chat_window = self.query_one("#chat-window", ChatWindow)
+            chat_window.set_websearch_disabled(is_cloud)
+            if is_cloud:
+                self.websearch_enabled = False
+
             # Changes 3: preload/unload ollama model on switch
             if new_model.startswith("ollama/"):
                 self._preload_ollama(new_model)
@@ -458,6 +474,9 @@ class OptiChatApp(App):
                         reply = item.response
                         if item.error:
                             reply = f"*Error communicating with model:* `{item.error}`"
+                            stream_bubble.append_token(reply)
+                        elif not stream_bubble._accumulated and reply:
+                            stream_bubble.append_token(reply)
                         # Finalise the bubble (trace already shown above)
                         await stream_bubble.finish_streaming()
                         container.scroll_end(animate=False)

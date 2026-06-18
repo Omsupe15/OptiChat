@@ -389,6 +389,17 @@ class ChatWindow(Vertical):
         except Exception:
             pass
 
+    def set_websearch_disabled(self, disabled: bool) -> None:
+        """Enable or disable the web search toggle switch."""
+        try:
+            widget = self.query_one("#websearch-toggle-widget", WebSearchToggle)
+            switch = widget.query_one("#websearch-toggle", Switch)
+            switch.disabled = disabled
+            if disabled:
+                switch.value = False
+        except Exception:
+            pass
+
 
 # ──────────────────────────────────────────────
 #  Welcome / empty-state panel

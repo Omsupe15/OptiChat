@@ -1,7 +1,10 @@
 """OptiChat LangGraph prompt pipeline.
 
 The graph is organized as explicit LLM-backed sub-agent stages while keeping
-the public API used by the UI stable.
+the public API used by the UI stable. Under the new optimizations (Changes 5),
+all sub-agents are executed sequentially (no parallel execution), and cloud model 
+pipelines are optimized to run using exactly 2 LLM calls (combining orchestrator 
+and plan assembly, programmatically searching memory, and response generation).
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ from app.pipeline_functions import (
     schema_agent,
     stream_invoke_model,
     websearch_agent,
+    run_cloud_pipeline_streaming,
+    run_cloud_pipeline_until_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,6 +153,12 @@ async def run_pipeline(
         model_id,
         websearch_enabled=websearch_enabled,
     )
+    is_cloud = model_id.split("/", 1)[0] in ("openai", "anthropic", "gemini")
+    if is_cloud:
+        state = await run_cloud_pipeline_until_prompt(state)
+        state = await response_agent(state)
+        state = await post_process_agent(state)
+        return state
     return await _compiled_graph.ainvoke(state)
 
 
@@ -176,7 +187,10 @@ async def stream_pipeline(
 
     # ── Stream trace-log lines as pre-flight agents run ───────────
     prepared_state: PipelineState | None = None
-    async for item in run_pipeline_streaming(state):
+    is_cloud = model_id.split("/", 1)[0] in ("openai", "anthropic", "gemini")
+    stream_func = run_cloud_pipeline_streaming if is_cloud else run_pipeline_streaming
+
+    async for item in stream_func(state):
         if isinstance(item, _TraceChunk):
             yield TraceLogChunk(item.text)
         elif isinstance(item, dict):

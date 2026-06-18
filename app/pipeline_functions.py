@@ -177,6 +177,22 @@ def _to_lc_messages(messages: list[dict[str, str]]):
     return [types[m["role"]](content=m["content"]) for m in messages]
 
 
+def _extract_text_content(content: Any) -> str:
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and "text" in part:
+                parts.append(part["text"])
+            elif isinstance(part, str):
+                parts.append(part)
+            elif hasattr(part, "text"):
+                parts.append(part.text)
+            elif hasattr(part, "get") and part.get("text"):
+                parts.append(part.get("text"))
+        return "".join(parts)
+    return str(content) if content is not None else ""
+
+
 def _compact_json(value: Any, max_chars: int = 5000) -> str:
     text = json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= max_chars:
@@ -233,7 +249,7 @@ async def _agent_json_call(
     raw = ""
     try:
         response = await model.ainvoke(messages)
-        raw = str(response.content)
+        raw = _extract_text_content(response.content)
         parsed = _safe_json_from_text(raw)
         if parsed is not None:
             return parsed, _append_log(state, agent_name, "ok", {"parsed": True})
@@ -249,7 +265,7 @@ async def _agent_json_call(
                 HumanMessage(content=raw),
             ]
         )
-        parsed = _safe_json_from_text(str(repair.content))
+        parsed = _safe_json_from_text(_extract_text_content(repair.content))
         if parsed is not None:
             return parsed, _append_log(state, agent_name, "ok", {"parsed_after_repair": True})
 
@@ -725,7 +741,7 @@ async def prompt_assembly_agent(state: PipelineState) -> PipelineState:
         (
             "Create a concise visible action plan for the final answer. This plan "
             "will be shown to the user. Do not include hidden reasoning. Return "
-            "{'answer_plan': ['...']}."
+            "{'answer_plan': ['...']} in a concise precise manner. Use only 5-6 steps."
         ),
         {
             "user_input": state["user_input"],
@@ -805,10 +821,11 @@ def _build_final_prompt(state: PipelineState, answer_plan: list[str]) -> list[di
             f"{state['selected_output_schema']}"
         )
 
-    blocks.append(
-        "[VISIBLE ACTION PLAN]\n"
-        + "\n".join(f"{i}. {step}" for i, step in enumerate(answer_plan, 1))
-    )
+    if answer_plan:
+        blocks.append(
+            "[VISIBLE ACTION PLAN]\n"
+            + "\n".join(f"{i}. {step}" for i, step in enumerate(answer_plan, 1))
+        )
     blocks.append(_build_adaptive_instructions(state.get("complexity", "moderate")))
     blocks.append(
         "[ANSWER RULES]\n"
@@ -862,7 +879,7 @@ async def response_agent(state: PipelineState) -> PipelineState:
     try:
         model = get_chat_model(state["model_id"])
         response = await model.ainvoke(_to_lc_messages(state.get("final_prompt", [])))
-        raw_reply = str(response.content)
+        raw_reply = _extract_text_content(response.content)
         clean_reply = _strip_trace_tags(raw_reply)
         trace_log = state.get("visible_trace_log") or _build_visible_trace_log(state)
         state = _append_log(state, "response_agent", "ok", {"response_chars": len(clean_reply)})
@@ -895,7 +912,8 @@ async def stream_invoke_model(state: PipelineState):
     try:
         model = get_chat_model(state["model_id"])
         async for chunk in model.astream(_to_lc_messages(state.get("final_prompt", []))):
-            text = chunk.content if hasattr(chunk, "content") else str(chunk)
+            content = chunk.content if hasattr(chunk, "content") else chunk
+            text = _extract_text_content(content)
             if not text:
                 continue
             raw_chunks.append(text)
@@ -998,15 +1016,9 @@ async def run_pipeline_until_prompt(state: PipelineState) -> PipelineState:
     needs_memory = state.get("needs_memory", False)
     needs_websearch = state.get("needs_websearch", False)
 
-    if needs_memory and needs_websearch:
-        mem_state, web_state = await asyncio.gather(
-            memory_agent(state),
-            websearch_agent(state),
-        )
-        state = {**state, **mem_state, **web_state}
-    elif needs_memory:
+    if needs_memory:
         state = await memory_agent(state)
-    elif needs_websearch:
+    if needs_websearch:
         state = await websearch_agent(state)
 
     state = await prompt_assembly_agent(state)
@@ -1221,3 +1233,283 @@ async def unload_ollama_model(model_name: str) -> bool:
     except Exception:
         logger.exception("Failed to unload Ollama model %s", model_name)
         return False
+
+
+# ══════════════════════════════════════════════
+#  Cloud models optimized pipeline (Changes 5)
+# ══════════════════════════════════════════════
+
+async def _cloud_agent_call(
+    state: PipelineState,
+    agent_name: str,
+    system_prompt: str,
+    payload_str: str,
+) -> tuple[str, PipelineState]:
+    """Call a cloud LLM sub-agent without JSON repair retries."""
+    from app.connect_models import get_chat_model
+
+    model = get_chat_model(state["model_id"])
+    messages = [
+        SystemMessage(
+            content=(
+                f"You are the {agent_name} sub-agent in OptiChat. "
+                "Output your response clearly in the requested XML/text format. "
+                "Do not include hidden reasoning or chain-of-thought."
+                f"\n\n{system_prompt}"
+            )
+        ),
+        HumanMessage(content=payload_str),
+    ]
+
+    try:
+        response = await model.ainvoke(messages)
+        content = _extract_text_content(response.content)
+        return content, _append_log(state, agent_name, "ok", {"raw_chars": len(content)})
+    except Exception as exc:
+        logger.exception("%s sub-agent failed", agent_name)
+        state = _append_error(state, f"{agent_name}: {exc}")
+        return "", state
+
+
+def _parse_xml_tag(text: str, tag: str, default: str = "") -> str:
+    """Helper to extract content between XML tags case-insensitively."""
+    match = re.search(f"<{tag}>(.*?)</{tag}>", text, re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else default
+
+
+async def cloud_orchestrator_agent(state: PipelineState) -> PipelineState:
+    """Cloud-specific orchestrator agent combining orchestrator classification,
+    personalization analysis, and action plan generation into a single LLM call.
+    Also programmatically performs lexical and semantic memory search without an LLM call.
+    """
+    user_input = state["user_input"]
+    user_lower = user_input.lower()
+
+    # Deterministic pre-computations
+    context_hint, needs_long_term = _memory_overlap_hint(
+        user_input,
+        state.get("short_term", []),
+        state.get("lru_cached", []),
+    )
+    heuristic_category = _heuristic_category(user_lower)
+    heuristic_complexity = _heuristic_complexity(user_lower)
+    depth_map = {"simple": "quick", "moderate": "standard", "complex": "detailed"}
+    heuristic_depth = depth_map.get(heuristic_complexity, "standard")
+
+    try:
+        cfg = db.load_config()
+        memory_enabled = cfg.get("memory_enabled", True)
+    except Exception:
+        memory_enabled = True
+
+    personalized = mem.load_personalized_memory() if memory_enabled else {}
+
+    system_prompt = (
+        "You are the combined Orchestrator and Prompt Assembly Agent in OptiChat.\n"
+        "Perform all of these tasks and return the result using XML tags:\n"
+        "1. Determine complexity (simple/moderate/complex) and put it inside `<complexity>...</complexity>`.\n"
+        "2. Select schema category (one of: factual_definition, how_to_procedural, comparison, creative_writing, historical_analytical, scientific_technical, opinion_debate, personal_advice, code_explanation, open_ended_conversational) inside `<schema_category>...</schema_category>`.\n"
+        "3. Select schema depth (quick/standard/detailed) inside `<schema_depth>...</schema_depth>`.\n"
+        "4. Write a personalization summary inside `<personalization_summary>...</personalization_summary>`.\n"
+        "5. Output relevant key-value preferences as a JSON string inside `<relevant_preferences>...</relevant_preferences>`.\n"
+        "6. Create a complete action plan inside `<plan>...</plan>` with one step per line (concise, visible steps to answer the query).\n"
+        "Do not output any reasoning or markdown outside the tags."
+    )
+
+    payload = {
+        "user_input": user_input,
+        "short_term_recent": state.get("short_term", [])[-5:],
+        "lru_cached_recent": state.get("lru_cached", [])[-5:],
+        "personalized_memory": personalized,
+        "available_schemas": OUTPUT_SCHEMAS,
+    }
+
+    content, state = await _cloud_agent_call(
+        state,
+        "cloud_orchestrator_agent",
+        system_prompt,
+        _compact_json(payload),
+    )
+
+    # Parsing tags
+    complexity = _parse_xml_tag(content, "complexity", heuristic_complexity).lower()
+    if complexity not in {"simple", "moderate", "complex"}:
+        complexity = heuristic_complexity
+
+    category = _parse_xml_tag(content, "schema_category", heuristic_category)
+    if category not in OUTPUT_SCHEMAS:
+        category = heuristic_category
+
+    depth = _parse_xml_tag(content, "schema_depth", heuristic_depth)
+    if depth not in OUTPUT_SCHEMAS.get(category, {}):
+        depth = heuristic_depth
+
+    p_summary = _parse_xml_tag(content, "personalization_summary")
+    
+    prefs_text = _parse_xml_tag(content, "relevant_preferences")
+    try:
+        rel_prefs = json.loads(prefs_text) if prefs_text else {}
+    except Exception:
+        rel_prefs = {}
+
+    if not isinstance(rel_prefs, dict):
+        rel_prefs = {}
+    if isinstance(personalized, dict):
+        personalized = {**personalized, "relevant_preferences": rel_prefs}
+
+    # Action plan steps
+    plan_text = _parse_xml_tag(content, "plan")
+    answer_plan = [line.strip() for line in plan_text.splitlines() if line.strip()]
+    if not answer_plan:
+        answer_plan = [
+            "Identify the user's main request.",
+            "Use selected memory context where relevant.",
+            "Answer using the selected response schema.",
+        ]
+
+    # ── Memory Search (Lexical + Semantic) ──
+    matched_memories = []
+    
+    query_words = {w for w in re.findall(r"\w+", user_input.lower()) if len(w) > 2}
+    stopwords = {"the", "and", "a", "an", "of", "to", "in", "is", "that", "it", "was", "for", "on", "are", "as", "with", "his", "they", "i", "you", "he", "she"}
+    query_words = query_words - stopwords
+
+    # Lexical search in short-term memory
+    for msg in state.get("short_term", []):
+        msg_content = msg.get("content", "")
+        if msg_content:
+            msg_words = {w for w in re.findall(r"\w+", msg_content.lower()) if len(w) > 2} - stopwords
+            if query_words & msg_words:
+                matched_memories.append({
+                    "content": msg_content,
+                    "role": msg.get("role", "user"),
+                    "score": 1.0,
+                    "source": "short_term",
+                    "timestamp": msg.get("timestamp", ""),
+                })
+
+    # Lexical search in LRU memory
+    for msg in state.get("lru_cached", []):
+        msg_content = msg.get("content", "")
+        if msg_content:
+            msg_words = {w for w in re.findall(r"\w+", msg_content.lower()) if len(w) > 2} - stopwords
+            if query_words & msg_words:
+                if not any(m["content"] == msg_content for m in matched_memories):
+                    matched_memories.append({
+                        "content": msg_content,
+                        "role": msg.get("role", "user"),
+                        "score": 1.0,
+                        "source": "lru_cached",
+                        "timestamp": msg.get("timestamp", ""),
+                    })
+
+    # Semantic search in long-term memory vectordb
+    raw_chunks = []
+    try:
+        raw_chunks = mem.retrieve_from_long_term(state["chat_id"], user_input, top_k=5)
+    except Exception as exc:
+        logger.exception("Long-term memory retrieval failed")
+        state = _append_error(state, f"cloud_orchestrator retrieval: {exc}")
+
+    candidate_chunks = [
+        c for c in raw_chunks if float(c.get("score", 0) or 0) >= RELEVANCE_THRESHOLD
+    ]
+    for chunk in candidate_chunks:
+        if not any(m["content"] == chunk["content"] for m in matched_memories):
+            matched_memories.append({
+                "content": chunk["content"],
+                "role": chunk.get("role", "user"),
+                "score": float(chunk.get("score", 0) or 0),
+                "source": "long_term",
+                "timestamp": chunk.get("timestamp", ""),
+            })
+
+    memory_used = len(matched_memories) > 0
+
+    # If found return the context and add it to action plan as some more context.
+    if memory_used:
+        for match in matched_memories:
+            short_content = match["content"].replace('\n', ' ')
+            if len(short_content) > 120:
+                short_content = short_content[:120] + "..."
+            answer_plan.append(f"Context from memory [{match['source']}]: {short_content}")
+
+    temp_state = {
+        **state,
+        "question_type": category,
+        "complexity": complexity,
+        "language": "English",
+        "needs_long_term": memory_used,
+        "context_hint": context_hint,
+        "memory_path": "long_term" if memory_used else "short_lru",
+        "schema_category": category,
+        "schema_depth": depth,
+        "selected_output_schema": OUTPUT_SCHEMAS[category][depth],
+        "personalized": personalized,
+        "personalization_summary": p_summary,
+        "needs_memory": memory_used,
+        "needs_websearch": False,
+        "long_term_raw": raw_chunks,
+        "long_term_scored": matched_memories,
+        "memory_used": memory_used,
+        "answer_plan": answer_plan,
+    }
+
+    final_prompt = _build_final_prompt(temp_state, answer_plan)
+    trace_log = _build_visible_trace_log({**temp_state, "answer_plan": answer_plan})
+
+    return {
+        **temp_state,
+        "final_prompt": final_prompt,
+        "visible_trace_log": trace_log,
+        "trace_log": trace_log,
+    }
+
+
+async def cloud_memory_agent(state: PipelineState) -> PipelineState:
+    """Legacy/compatibility cloud memory agent function."""
+    return state
+
+
+async def cloud_prompt_assembly_agent(state: PipelineState) -> PipelineState:
+    """Legacy/compatibility cloud prompt assembly agent function."""
+    return state
+
+
+async def run_cloud_pipeline_streaming(state: PipelineState):
+    """Streaming variant of the pre-response cloud pipeline under Changes 5 optimization."""
+    # 1. Cloud Orchestrator Agent (runs combined LLM call & memory search)
+    state = await cloud_orchestrator_agent(state)
+
+    complexity = state.get("complexity", "moderate")
+    yield _TraceChunk(f"📋 **Response type:** {complexity}\n")
+
+    category = state.get("schema_category", "unknown")
+    depth = state.get("schema_depth", "standard")
+    yield _TraceChunk(f"📐 **Output schema:** {category} / {depth}\n")
+
+    p_summary = state.get("personalization_summary", "")
+    if p_summary:
+        yield _TraceChunk(f"👤 **Personalization:** {p_summary}\n")
+
+    memory_used = state.get("memory_used", False)
+    long_term_scored = state.get("long_term_scored", [])
+    yield _TraceChunk(
+        f"🧠 **Memory retrieval:** {'recalled' if memory_used else 'no matches found'} ({len(long_term_scored)} matches)\n"
+    )
+
+    answer_plan = state.get("answer_plan", [])
+    if answer_plan:
+        yield _TraceChunk("\n**Action plan:**\n")
+        for i, step in enumerate(answer_plan, 1):
+            yield _TraceChunk(f"{i}. {step}\n")
+
+    # 2. Signal that generation is starting
+    yield _TraceChunk("\n⏳ Generating...\n")
+    yield state
+
+
+async def run_cloud_pipeline_until_prompt(state: PipelineState) -> PipelineState:
+    """Non-streaming variant of the pre-response cloud pipeline under Changes 5 optimization."""
+    state = await cloud_orchestrator_agent(state)
+    return state
