@@ -1,5 +1,8 @@
 # OptiChat
 
+<img src="https://github.com/Omsupe15/OptiChat/issues/1#issue-4692045509" alt="Alt text" width="500">
+
+
 OptiChat is an advanced terminal-based AI Chat Optimisation Tool built with primarily using LangChain, LangGraph and Textual. It features a robust multi-tier memory system, personalized memory tracking, dynamic model connectivity, (including cloud and local Ollama models), web search support and a sophisticated prompt construction pipeline for high-quality, contextual AI responses.
 
 ## 🌟 Key Features
@@ -38,98 +41,16 @@ OptiChat stores its data locally in `~/.optichat/`. This includes:
 
 The cloud pipeline is optimized for speed and API cost efficiency, running the entire pre-response phase in **exactly one LLM call**, followed by a second LLM call for response generation.
 
-```mermaid
-flowchart TD
-    Input([User Input]) --> Orchestrator[Cloud Orchestrator Agent <br/><b>(LLM Call 1)</b>]
-    
-    subgraph cloud_orch [1. Joint Orchestration & Plan Assembly]
-        Orchestrator --> Classify[Determine Complexity & Schema]
-        Orchestrator --> Personalize[Analyze Personalization Preferences]
-        Orchestrator --> GenPlan[Generate Answer Action Plan]
-    end
-
-    Classify & Personalize & GenPlan --> MemorySearch[Programmatic Memory Search <br/><b>(No LLM)</b>]
-
-    subgraph memory_retrieval [Programmatic Memory Search Flow]
-        MemorySearch --> ShortTerm[Lexical Match: Short-Term Memory]
-        MemorySearch --> LRU[Lexical Match: LRU Cache]
-        MemorySearch --> LongTerm[Semantic Match: ChromaDB Vector Store]
-        
-        ShortTerm & LRU & LongTerm --> Merge[Merge, Deduplicate & Score Chunks]
-        Merge --> Filter[Filter by Threshold >= 0.40]
-    end
-
-    Filter --> Assembly[Deterministic Prompt Assembly <br/><i>Appends Retrieved Context to Prompt/Plan</i>]
-    
-    Assembly --> LLMGen[Response Generation <br/><b>(LLM Call 2)</b>]
-    
-    LLMGen --> Stream([Stream/Output Response])
-    
-    Stream --> PostProcess[Post-Process Agent <br/><b>(LLM Call 3)</b>]
-    
-    subgraph post_run [Post-Processing & Local Storage Writes]
-        PostProcess --> DBWrite[(Save Messages to SQLite)]
-        PostProcess --> CacheWrite[Update Short-Term & LRU Caches]
-        PostProcess --> PeriodicUpdate[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>]
-    end
-```
-
 ### Key Stages in Cloud Pipeline:
 1. **Cloud Orchestrator Agent (LLM Call 1)**: In a single pass, the cloud model determines complexity, category schema, depth, personalization preferences, and generates the action plan.
 2. **Programmatic Memory Search (No LLM)**: Short-term and LRU caches are searched lexically, and ChromaDB is searched semantically. Matching context chunks are sorted, filtered, and appended directly to the final prompt.
 3. **Response Generation (LLM Call 2)**: Streams the response tokens to the UI or returns the completed text.
 4. **Post-Processing (LLM Call 3)**: Logs token counts, writes message history to the local SQLite database, updates short-term memory, and triggers a periodic preference learning update every 3 message turns.
 
----
 
 ## Pipeline for Ollama(Local) Models
 
 The local pipeline runs using LangGraph, executing specialized, single-purpose agents sequentially or concurrently to construct the prompt when API costs are not a factor.
-
-```mermaid
-flowchart TD
-    Input([User Input]) --> Classifier[Classifier / Orchestrator Agent <br/><b>(LLM Call 1)</b>]
-    
-    subgraph orch [1. Classification & Routing]
-        Classifier --> Classify[Classify Complexity, Schema & Depth]
-        Classifier --> RouteDecision{Decide Routing}
-    end
-
-    RouteDecision -->|needs_memory = True| MemAgent[Memory Agent <br/><b>(LLM Call 2)</b>]
-    RouteDecision -->|needs_websearch = True| WebSearch[Websearch Agent <br/><b>(LLM Calls 3 & 4)</b>]
-    RouteDecision -->|Neither / Done| PromptAssembly[Prompt Assembly Agent <br/><b>(LLM Call 5)</b>]
-
-    subgraph memory_flow [Memory Selection Node]
-        MemAgent --> VectorRetrieve[Retrieve chunks from ChromaDB]
-        VectorRetrieve --> LLMFilter[LLM selects & ranks relevant chunks]
-    end
-
-    subgraph web_flow [Web Search Node]
-        WebSearch --> QueryPlanner[Query Planner <br/><b>(LLM Call 3)</b>]
-        QueryPlanner --> DDGSearch[Run DuckDuckGo Searches]
-        DDGSearch --> SourceRanker[Source Ranker & Summary <br/><b>(LLM Call 4)</b>]
-        SourceRanker -->|If missing facts| SecondSearch[Second-Pass DDG Search]
-    end
-
-    LLMFilter & SourceRanker & SecondSearch --> PromptAssembly
-
-    subgraph prompt_assembly [Prompt Assembly Node]
-        PromptAssembly --> PlanGen[Generate Visible Action Plan]
-        PlanGen --> BuildPrompt[Deterministically Build Final Prompt]
-    end
-
-    BuildPrompt --> LLMGen[Response Generation <br/><b>(LLM Call 6)</b>]
-    
-    LLMGen --> Stream([Stream/Output Response])
-    
-    Stream --> PostProcess[Post-Process Agent <br/><b>(LLM Call 7)</b>]
-    
-    subgraph post_run_local [Post-Processing Writes]
-        PostProcess --> DBWriteLocal[(Save Messages to SQLite)]
-        PostProcess --> CacheWriteLocal[Update Short-Term & LRU Caches]
-        PostProcess --> PeriodicUpdateLocal[Periodic Personalized Memory Update <br/><i>(Every 3 Responses)</i>]
-    end
-```
 
 ### Key Stages in Local Pipeline:
 1. **Classifier Agent (LLM Call 1)**: Analyzes the question and decides output formats, personalization, and whether memory/web search should be enabled.
@@ -170,7 +91,12 @@ flowchart TD
 | `↑ / ↓` | Scroll through input history (previous commands/messages) |
 | `Page Up / Page Down` | Scroll the main panel content |
 
-## Disclaimer
-
+## Disclaimer:
+* The application has large dependencies, and will take 1-1.5GB of space to install all the required libraries. Please check the requirements.txt file for the list of all the dependencies. Make sure you have enough space on your device before installing the application.
+* Running a local model with this application requires atleast 4GB-6GB of VRAM. Also you will be required to download Ollama and a local model differently.
+* If you are using a cloud model make sure the model you choose is actually available at a free tier and also make sure the model is not in deprecation phase. I tried using Gemini 2.0 and it was deprecated. You can try Gemini 3.1 flash or Gemini flash 2.5 and their lite versions. For other providers check their respective websites which models are available at a free tier.  
+* 3 LLM calls are used for a single response in the cloud pipeline.
+* The first launch for the application might take some time.
+* This tool is still under development, so there may be bugs and issues.
 
 *Developed using Textual, LangChain, and LangGraph.*
