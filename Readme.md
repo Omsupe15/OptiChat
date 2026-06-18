@@ -1,8 +1,5 @@
 # OptiChat
 
-<img src="https://github.com/Omsupe15/OptiChat/issues/1#issue-4692045509" alt="Alt text" width="500">
-
-
 OptiChat is an advanced terminal-based AI Chat Optimisation Tool built with primarily using LangChain, LangGraph and Textual. It features a robust multi-tier memory system, personalized memory tracking, dynamic model connectivity, (including cloud and local Ollama models), web search support and a sophisticated prompt construction pipeline for high-quality, contextual AI responses.
 
 ## 🌟 Key Features
